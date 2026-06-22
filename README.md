@@ -1,0 +1,45 @@
+# relational-schema-analyzer
+
+Analyze a **relational database schema** and produce a canonical **conceptual model**
+(entities / relationships / properties), a **conceptual → physical mapping** back to the
+source relational schema, and **metadata** (confidence, fingerprints, patterns). Optional
+exports include **OWL** (Turtle / JSON-LD) for ontology pipelines.
+
+This library is the relational analogue of
+[`arangodb-schema-analyzer`](https://pypi.org/project/arangodb-schema-analyzer/) and
+emits the **same tool-contract bundle shape** so that downstream consumers
+(`arango-ontoextract`, transpilers, and ETL tools such as `r2g`) can treat relational and
+ArangoDB sources interchangeably.
+
+```text
+PostgreSQL / MySQL / SQL Server / Snowflake / CSV
+        │
+        ▼  introspect (live catalog views, not DDL parsing)
+   Physical Schema  (tables, columns, PKs, FKs, types)
+        │
+        ▼  infer (deterministic baseline + optional LLM refinement)
+   { conceptualSchema, physicalMapping, metadata }   ← canonical JSON bundle
+        │
+        ├──► OWL Turtle / JSON-LD       (arango-ontoextract, ontology tooling)
+        ├──► relational physical view   (SQL-native query tooling, future)
+        └──► consumed by r2g            (drives ArangoDB MappingConfig generation)
+```
+
+## Status
+
+Design phase. See:
+
+- [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, data model, tool contract, OWL mapping
+- [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) — phased delivery plan & extraction inventory
+
+## Why this exists
+
+Most of the relational **introspection** layer already exists and is battle-tested inside
+the `r2g` (relational-to-graph) project, but it is welded to ArangoDB ETL and cannot be
+reused elsewhere. This repo extracts that core into a paradigm-neutral library and adds the
+**conceptual / OWL layer** that `r2g` never had, conforming to the contract the ArangoDB
+analyzer already publishes.
+
+## License
+
+TBD (intended to match the surrounding Arango ecosystem libraries).
