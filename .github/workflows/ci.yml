@@ -20,10 +20,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install (dev extras)
+      - name: Install (dev + extras under test)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          # postgres: psycopg is imported eagerly by the PG connector module.
+          # csv: polars backs the CSV connector. mysql/mssql/snowflake drivers are
+          # intentionally NOT installed so their "missing driver" paths are tested.
+          python -m pip install -e ".[dev,postgres,csv]"
 
       - name: Ruff
         run: ruff check .

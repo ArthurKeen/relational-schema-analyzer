@@ -13,19 +13,32 @@ delivered in phases; the public API below is the target surface (Phase 1+).
 
 from __future__ import annotations
 
+from .connectors import (
+    SUPPORTED_SOURCE_TYPES,
+    SourceConnector,
+    create_connector,
+    create_source_connector,
+)
+from .schema_diff import diff_schemas
+from .topo_sort import topological_sort_tables
+from .types import Column, ForeignKey, PhysicalSchema, Schema, Table
+
 __version__ = "0.1.0"
 
-# Target public API (implemented incrementally — see IMPLEMENTATION-PLAN.md).
+# Phase 1 (physical core, extracted from r2g) — implemented.
+# Phase 2+ names (RelationalSchemaAnalyzer, ConceptualSchema, export_bundle,
+# export_owl_turtle, export_owl_jsonld) land in later phases per IMPLEMENTATION-PLAN.md.
 __all__ = [
     "__version__",
-    # Phase 1 (physical core, extracted from r2g):
     "create_connector",
+    "create_source_connector",
+    "SourceConnector",
+    "SUPPORTED_SOURCE_TYPES",
     "PhysicalSchema",
-    # Phase 2 (conceptual model + baseline):
-    "RelationalSchemaAnalyzer",
-    "ConceptualSchema",
-    # Phase 3 (exports):
-    "export_bundle",
-    "export_owl_turtle",
-    "export_owl_jsonld",
+    "Schema",
+    "Table",
+    "Column",
+    "ForeignKey",
+    "diff_schemas",
+    "topological_sort_tables",
 ]

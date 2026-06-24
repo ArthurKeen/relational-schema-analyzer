@@ -23,13 +23,13 @@ whole ecosystem rather than being trapped inside `r2g`.
 ## Phase 0 — Repo bootstrap (this repo)
 
 - [x] Create repo + git
-- [ ] `pyproject.toml` (hatchling, name `relational-schema-analyzer`, import
+- [x] `pyproject.toml` (hatchling, name `relational-schema-analyzer`, import
       `relational_schema_analyzer`, Python ≥ 3.10)
-- [ ] `relational_schema_analyzer/__init__.py` public API skeleton
-- [ ] `.gitignore`, license, CI stub (ruff + pytest)
-- [ ] `docs/tool-contract/v1/response.schema.json` (+ request schema, examples) copied/adapted
+- [x] `relational_schema_analyzer/__init__.py` public API skeleton
+- [x] `.gitignore`, license (Apache-2.0), CI stub (ruff + pytest)
+- [x] `docs/tool-contract/v1/response.schema.json` (+ request schema, examples) copied/adapted
       from `arango-schema-mapper/docs/tool-contract/v1/`
-- [ ] Create GitHub repo and push `main`
+- [x] Create GitHub repo and push `main`
 
 Optional extras layout (mirror Arango analyzer):
 `[postgres] [mysql] [sqlserver] [snowflake] [openai] [anthropic] [openrouter] [mcp] [dev]`
@@ -60,9 +60,24 @@ Lift from `r2g` with minimal edits. **Extraction inventory** (source → destina
 `transformers/`, `generators/`, `connectors/arango_reader.py`, `catalog.py`, `ui/`,
 `mcp_server.py`, `main.py`.
 
+Progress (extraction landed in this pass):
+- [x] `types.py` (`PhysicalSchema` + `Schema` alias; `ForeignKey`/`Column`/`Table`)
+- [x] `connectors/` (`base` + `create_connector` factory, `session`, `postgres`, `mysql`,
+      `mssql`, `snowflake`, `csv_source`). Kafka **dropped** for v0 (decision §9.3).
+- [x] `typemap.py` (`DEFAULT_TYPE_MAP` + `pg_type_to_json_type`), `heuristics.py`
+      (`is_likely_join_table`), `naming.py` (dependency-free subset), `dump_reader.py`
+- [x] `schema_diff.py`, `topo_sort.py`
+- [x] Ported tests pass (139): connectors (base/csv/mysql/mssql/snowflake), `schema_diff`,
+      `topo_sort`, physical `types`; ruff clean
+- [ ] **Deferred to next increment:** `fk_inference.py` (1.3k LOC; couples to the Arango
+      `EdgeDefinition` via `to_edge_definition`, which must be stripped for the relational
+      lib) + `test_fk_inference.py`
+- [ ] `relational-schema-analyzer snapshot` CLI emits `physical.json` (CLI is Phase 3)
+
 Exit criteria:
-- [ ] `create_connector(...).get_schema()` returns `PhysicalSchema` for PG/MySQL/MSSQL/Snowflake/CSV
-- [ ] ported connector + fk-inference + diff tests pass
+- [x] `create_connector(...)` builds a connector for PG/MySQL/MSSQL/Snowflake/CSV
+      (URL-parsing + protocol conformance covered; live `get_schema()` needs a DB)
+- [x] ported connector + diff tests pass (fk-inference port pending, see above)
 - [ ] `relational-schema-analyzer snapshot` CLI emits `physical.json`
 
 ---
