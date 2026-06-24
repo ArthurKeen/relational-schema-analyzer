@@ -19,6 +19,12 @@ from .connectors import (
     create_connector,
     create_source_connector,
 )
+from .fk_inference import (
+    InferenceOptions,
+    InferredForeignKey,
+    create_value_sampler,
+    infer_foreign_keys,
+)
 from .schema_diff import diff_schemas
 from .topo_sort import topological_sort_tables
 from .types import Column, ForeignKey, PhysicalSchema, Schema, Table
@@ -41,4 +47,8 @@ __all__ = [
     "ForeignKey",
     "diff_schemas",
     "topological_sort_tables",
+    "infer_foreign_keys",
+    "InferredForeignKey",
+    "InferenceOptions",
+    "create_value_sampler",
 ]

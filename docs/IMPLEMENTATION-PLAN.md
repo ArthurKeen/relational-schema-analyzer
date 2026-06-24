@@ -67,17 +67,18 @@ Progress (extraction landed in this pass):
 - [x] `typemap.py` (`DEFAULT_TYPE_MAP` + `pg_type_to_json_type`), `heuristics.py`
       (`is_likely_join_table`), `naming.py` (dependency-free subset), `dump_reader.py`
 - [x] `schema_diff.py`, `topo_sort.py`
-- [x] Ported tests pass (139): connectors (base/csv/mysql/mssql/snowflake), `schema_diff`,
-      `topo_sort`, physical `types`; ruff clean
-- [ ] **Deferred to next increment:** `fk_inference.py` (1.3k LOC; couples to the Arango
-      `EdgeDefinition` via `to_edge_definition`, which must be stripped for the relational
-      lib) + `test_fk_inference.py`
+- [x] `fk_inference.py` — decoupled from the Arango `EdgeDefinition`: the
+      `to_edge_definition()` helper is replaced by relational-native
+      `InferredForeignKey.to_foreign_key() -> ForeignKey`; all four value samplers
+      (Postgres/MySQL/SQL Server/CSV) + `create_value_sampler` ported
+- [x] Ported tests pass (191): connectors (base/csv/mysql/mssql/snowflake), `schema_diff`,
+      `topo_sort`, physical `types`, `fk_inference`; ruff clean
 - [ ] `relational-schema-analyzer snapshot` CLI emits `physical.json` (CLI is Phase 3)
 
 Exit criteria:
 - [x] `create_connector(...)` builds a connector for PG/MySQL/MSSQL/Snowflake/CSV
       (URL-parsing + protocol conformance covered; live `get_schema()` needs a DB)
-- [x] ported connector + diff tests pass (fk-inference port pending, see above)
+- [x] ported connector + fk-inference + diff tests pass
 - [ ] `relational-schema-analyzer snapshot` CLI emits `physical.json`
 
 ---
