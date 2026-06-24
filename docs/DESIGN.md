@@ -47,6 +47,30 @@ The shared contract (chosen: **"all of the above via one tool contract"**) is th
 bundle `{ conceptualSchema, physicalMapping, metadata }`, aligned 1:1 with
 `arango-schema-mapper/docs/tool-contract/v1/`, with a relational `physicalMapping` variant.
 
+### Goals & success criteria
+
+**Goals**
+
+- **G1 — Reusable physical core.** Provide a paradigm-neutral relational introspection layer
+  (currently trapped in `r2g`) that `r2g` and future tools depend on rather than re-implement.
+- **G2 — Deterministic conceptual model.** Produce a complete, useful conceptual schema +
+  relational physical mapping with **no LLM**; LLM is additive refinement only.
+- **G3 — Contract interchangeability.** Emit the same tool-contract bundle shape as
+  `arango-schema-analyzer` so one downstream consumer handles relational and Arango sources.
+- **G4 — Ontology-ready exports.** Emit OWL Turtle / JSON-LD with physical back-links that
+  `arango-ontoextract` can ingest unchanged.
+
+**Success criteria** (consumer-level, testable)
+
+| ID | Criterion | Verified by |
+| --- | --- | --- |
+| S1 | `create_connector(type, url).get_schema()` returns a faithful `PhysicalSchema` for PG / MySQL / SQL Server / Snowflake / CSV | ported connector tests against r2g's `docker/` fixtures |
+| S2 | `analyze()` emits a bundle that validates against `docs/tool-contract/v1/response.schema.json` with `llm_provider=None` | schema validation in CI on Pagila / Chinook / Northwind |
+| S3 | Ambiguous constructs (inferred FKs, shared-PK inheritance, >2-FK join tables) set `reviewRequired=true` rather than guessing silently | golden-bundle assertions |
+| S4 | `arango-ontoextract` ingests our `export_owl_turtle()` output + provenance dict with **zero code changes** on its side | round-trip integration test (Phase 5) |
+| S5 | `r2g` builds and its existing test suite passes after replacing embedded modules with imports from this library | r2g CI on the integration PR |
+| S6 | OWL `phys:*` annotations resolve back to the exact source table/column/FK they came from | round-trip assertion in OWL export tests |
+
 ---
 
 ## 2. High-level architecture
@@ -309,12 +333,51 @@ See `docs/IMPLEMENTATION-PLAN.md` §"Extraction inventory" for the exact file mo
 
 ---
 
-## 9. Open questions
+## 9. Decisions
 
-1. **License** — match the Arango ecosystem libraries (confirm which: Apache-2.0?).
-2. **Shared contract package** — extract a `*-schema-contract` package now, or copy the
-   JSON Schema and converge later? (Recommend: copy now, converge in a follow-up.)
-3. **Connector parity** — port all of r2g's connectors (incl. Kafka) or only the RDBMS +
-   CSV ones for v0? (Recommend: RDBMS + CSV for v0; Kafka is arguably out of scope for a
-   *relational* analyzer.)
-4. **IRI namespace** — confirm `arangodb.com/schema/relational#` vs a vendor-neutral host.
+The four design-phase open questions are now resolved.
+
+### 9.1 License — **Apache-2.0**
+
+Matches the rest of the ecosystem: `arangodb-schema-analyzer` (the
+`arango-schema-mapper` repo) ships under **Apache-2.0**, same author/maintainer. We adopt
+Apache-2.0 verbatim so the libraries are license-compatible for the planned dependency
+chain (`r2g` → this lib; `arango-ontoextract` consuming our exports).
+
+- Action: add `LICENSE` (Apache-2.0) in Phase 0; set `license = "Apache-2.0"` and the
+  matching classifier in `pyproject.toml`; update `README.md` "License" from TBD.
+
+### 9.2 Shared contract package — **copy the v1 schema now, converge later**
+
+We do **not** block v0 on extracting a shared `*-schema-contract` package. Coordinating a
+new published package across `arango-schema-mapper`, `arango-cypher-py`, and
+`arango-sparql-py` is its own effort and would stall this library.
+
+- v0: copy `docs/tool-contract/v1/response.schema.json` (+ request schema + examples) from
+  `arango-schema-mapper`, adapt only the `physicalMapping` style enums, and **pin a
+  compatible version range** against the Arango analyzer's contract version.
+- Follow-up (Phase 5): drive extraction of a single shared `schema-contract` package and
+  retire the duplicated `MappingBundle` definitions. Track as a cross-repo issue.
+
+### 9.3 Connector parity — **RDBMS + CSV only for v0**
+
+Port `postgres`, `mysql`, `mssql`, `snowflake`, and `csv_source` from `r2g`. **Defer**
+Kafka, DDL-file parsing, and any new dialects (Oracle/SQLite).
+
+- Rationale: Kafka is a streaming source, not a *relational* schema, and is out of scope for
+  a relational analyzer; DDL parsing contradicts the "live catalog introspection" non-goal
+  in §1.
+- Future connectors land behind the same `SourceConnector` protocol as plugins, no core
+  changes required.
+
+### 9.4 IRI namespace — **keep the `arangodb.com` host, but make it configurable**
+
+Default conceptual IRI base stays `http://arangodb.com/schema/relational#` and physical
+annotations `http://arangodb.com/schema/physical#`, parallel to the Arango analyzer. This is
+what lets `arango-ontoextract` consume our TTL with zero changes (success criterion S4) — the
+`phys:` annotation namespace must line up with the existing Arango path.
+
+- The base IRIs are **constructor/CLI-configurable** (`--iri-base`, `--phys-iri-base`) so a
+  vendor-neutral deployment can override them.
+- If/when the Arango analyzer migrates to a vendor-neutral host, we follow in lockstep to
+  preserve interchangeability rather than diverging now.

@@ -1,0 +1,29 @@
+{
+  "contractVersion": "1",
+  "requestId": "demo-001",
+  "operation": "analyze",
+  "ok": true,
+  "tooling": {
+    "libraryVersion": "0.1.0",
+    "contractVersion": "1",
+    "snapshotFingerprint": "sha256-hex-here",
+    "snapshotVersion": 1,
+    "usedBaseline": false,
+    "repairAttempts": 1
+  },
+  "result": {
+    "analysis": {
+      "conceptualSchema": { "entities": [], "relationships": [], "properties": [] },
+      "physicalMapping": { "entities": {}, "relationships": {} },
+      "metadata": {
+        "confidence": 0.72,
+        "timestamp": "2026-02-17T23:59:59Z",
+        "analyzedCollectionCounts": { "documentCollections": 12, "edgeCollections": 4 },
+        "detectedPatterns": [],
+        "warnings": [],
+        "assumptions": []
+      }
+    }
+  }
+}
+

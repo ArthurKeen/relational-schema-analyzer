@@ -42,4 +42,5 @@ analyzer already publishes.
 
 ## License
 
-TBD (intended to match the surrounding Arango ecosystem libraries).
+Apache-2.0 — matching the surrounding Arango ecosystem libraries
+(`arangodb-schema-analyzer`, `r2g`). See [`LICENSE`](LICENSE).

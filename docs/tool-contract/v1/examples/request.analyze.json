@@ -1,0 +1,30 @@
+{
+  "contractVersion": "1",
+  "requestId": "demo-001",
+  "operation": "analyze",
+  "connection": {
+    "url": "http://localhost:8529",
+    "database": "mydb",
+    "username": "root",
+    "passwordEnvVar": "ARANGO_PASS"
+  },
+  "llm": {
+    "provider": "openrouter",
+    "model": "openai/gpt-4o-mini",
+    "apiKeyEnvVar": "OPENROUTER_API_KEY"
+  },
+  "analysisOptions": {
+    "timeoutMs": 60000,
+    "sampleLimitPerCollection": 3,
+    "includeSamplesInSnapshot": false,
+    "useCache": true,
+    "cache": { "type": "filesystem", "directory": ".schema-analyzer-cache" },
+    "cacheTtlSeconds": 86400,
+    "maxRepairAttempts": 2
+  },
+  "outputOptions": {
+    "includeSnapshot": false,
+    "includeSnapshotFingerprint": true
+  }
+}
+
