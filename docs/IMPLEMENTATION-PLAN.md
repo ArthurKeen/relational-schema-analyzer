@@ -85,21 +85,30 @@ Exit criteria:
 
 ## Phase 2 — Conceptual model + deterministic baseline (new value)
 
-- [ ] `conceptual.py` — `ConceptualSchema`, `Entity`, `Relationship`, `PropertyDef`
-- [ ] `mapping.py` — relational `PhysicalMapping` (`TABLE` / `FOREIGN_KEY` / `JOIN_TABLE`)
-- [ ] `baseline.py` — deterministic rules from DESIGN §4
-  - table → entity; column → datatype property
-  - FK → relationship (cardinality from PK/UNIQUE)
-  - join table → N:M relationship + association properties
-  - shared-PK-FK → `subClassOf` candidate (review-flagged)
-- [ ] `metadata.py` — confidence scoring, `reviewRequired`, fingerprint (reuse `schema_diff`)
-- [ ] `analyzer.py` — `RelationalSchemaAnalyzer.analyze(physical) -> Analysis`
-- [ ] tests: golden bundles for Pagila / Chinook / Northwind (r2g already ships these SQL
-      fixtures under `docker/`) — reuse as integration corpora
+- [x] `conceptual.py` — `ConceptualSchema` (dict-based, shape-identical to the Arango
+      analyzer for contract parity)
+- [x] `mapping.py` — relational `PhysicalMapping` (`TABLE` / `FOREIGN_KEY` / `JOIN_TABLE`)
+- [x] `baseline.py` — deterministic rules from DESIGN §4
+  - [x] table → entity (PascalCase, matching Arango); column → datatype property
+  - [x] FK → relationship (`1:1` when FK == local PK, else `1:N`)
+  - [x] join table (2 FKs whose columns form the PK) → N:M relationship + association
+        properties from the non-structural columns
+  - [x] shared-PK-FK → `subClassOf` candidate (review-flagged)
+  - [x] no declared FKs anywhere → name-based `fk_inference` fallback (relationships
+        marked `inferred` + review-flagged)
+- [x] `metadata.py` — confidence scoring, `reviewRequired`, `physicalSchemaFingerprint`
+- [x] `analyzer.py` — `RelationalSchemaAnalyzer.analyze(physical) -> Analysis` (+ `to_bundle()`)
+- [x] tests: baseline rules + analyzer + **contract conformance** (bundles validated against
+      `response.schema.json` `$defs/AnalysisOutput`) + determinism (210 total, ruff clean)
+- [ ] Golden bundles for Pagila / Chinook / Northwind — **deferred**: needs the r2g
+      `docker/` SQL fixtures + a live DB to introspect (better placed with Phase 5
+      integration). Synthetic unit + contract corpora cover the rules for now.
 
 Exit criteria:
-- [ ] `analyze` produces a valid bundle conforming to `docs/tool-contract/v1/response.schema.json`
-- [ ] baseline runs with **no LLM** and flags ambiguous cases
+- [x] `analyze` produces a valid bundle conforming to `docs/tool-contract/v1/response.schema.json`
+- [x] baseline runs with **no LLM** and flags ambiguous cases (`reviewRequired` +
+      `detectedPatterns`: `join_table`, `inheritance_via_shared_pk`, `inferred_foreign_keys`,
+      `missing_primary_key`)
 
 ---
 

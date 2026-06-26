@@ -13,6 +13,12 @@ delivered in phases; the public API below is the target surface (Phase 1+).
 
 from __future__ import annotations
 
+# Defined before the submodule imports below because ``analyzer``/``metadata``
+# read ``relational_schema_analyzer.__version__`` at import time.
+__version__ = "0.1.0"
+
+from .analyzer import Analysis, RelationalSchemaAnalyzer
+from .conceptual import ConceptualSchema
 from .connectors import (
     SUPPORTED_SOURCE_TYPES,
     SourceConnector,
@@ -25,17 +31,16 @@ from .fk_inference import (
     create_value_sampler,
     infer_foreign_keys,
 )
+from .mapping import PhysicalMapping
+from .metadata import fingerprint_physical_schema
 from .schema_diff import diff_schemas
 from .topo_sort import topological_sort_tables
 from .types import Column, ForeignKey, PhysicalSchema, Schema, Table
 
-__version__ = "0.1.0"
-
-# Phase 1 (physical core, extracted from r2g) — implemented.
-# Phase 2+ names (RelationalSchemaAnalyzer, ConceptualSchema, export_bundle,
-# export_owl_turtle, export_owl_jsonld) land in later phases per IMPLEMENTATION-PLAN.md.
+# export_bundle / export_owl_turtle / export_owl_jsonld land in Phase 3.
 __all__ = [
     "__version__",
+    # Phase 1 — physical core
     "create_connector",
     "create_source_connector",
     "SourceConnector",
@@ -51,4 +56,10 @@ __all__ = [
     "InferredForeignKey",
     "InferenceOptions",
     "create_value_sampler",
+    # Phase 2 — conceptual model + baseline
+    "RelationalSchemaAnalyzer",
+    "Analysis",
+    "ConceptualSchema",
+    "PhysicalMapping",
+    "fingerprint_physical_schema",
 ]
