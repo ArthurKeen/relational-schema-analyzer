@@ -99,10 +99,14 @@ Exit criteria:
 - [x] `metadata.py` — confidence scoring, `reviewRequired`, `physicalSchemaFingerprint`
 - [x] `analyzer.py` — `RelationalSchemaAnalyzer.analyze(physical) -> Analysis` (+ `to_bundle()`)
 - [x] tests: baseline rules + analyzer + **contract conformance** (bundles validated against
-      `response.schema.json` `$defs/AnalysisOutput`) + determinism (210 total, ruff clean)
-- [ ] Golden bundles for Pagila / Chinook / Northwind — **deferred**: needs the r2g
-      `docker/` SQL fixtures + a live DB to introspect (better placed with Phase 5
-      integration). Synthetic unit + contract corpora cover the rules for now.
+      `response.schema.json` `$defs/AnalysisOutput`) + determinism
+- [x] **Offline golden corpus** — the r2g CSV demo (`authors`/`books`/`members`/`loans`,
+      copied to `tests/fixtures/csv_demo/`). Runs with **no DB/Docker** (CSV connector reads
+      it directly) and exercises connector → baseline → inferred-FK end to end, with a
+      committed golden bundle (`tests/fixtures/csv_demo_bundle.golden.json`). 215 tests, ruff clean.
+- [ ] Golden bundles for Pagila / Chinook / Northwind (the **SQL-dump** corpora) — moved to
+      Phase 5: these need a live DB to introspect (we don't parse DDL), so they belong with
+      the Docker integration suite, gated behind `RUN_INTEGRATION`.
 
 Exit criteria:
 - [x] `analyze` produces a valid bundle conforming to `docs/tool-contract/v1/response.schema.json`
@@ -137,6 +141,10 @@ Exit criteria:
 
 ## Phase 5 — MCP + ecosystem integration
 
+- [ ] **Docker integration suite** (`RUN_INTEGRATION=1`): load the r2g SQL-dump corpora
+      (Pagila / Chinook / Northwind via `docker compose` + the r2g `docker/*.sql`), introspect
+      with the live connectors, and assert golden conceptual bundles — the live-DB counterpart
+      to the offline CSV golden corpus added in Phase 2.
 - [ ] `mcp_server.py` + `relational-schema-analyzer-mcp` entry point
 - [ ] **r2g integration PR**: add dependency, replace embedded modules with imports/shims,
       delete duplicated code, wire conceptual schema into `MappingConfig` generation

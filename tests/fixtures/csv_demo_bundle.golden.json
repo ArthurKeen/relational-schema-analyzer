@@ -1,0 +1,367 @@
+{
+  "conceptualSchema": {
+    "entities": [
+      {
+        "labels": [
+          "Authors"
+        ],
+        "name": "Authors",
+        "properties": [
+          {
+            "indexed": true,
+            "name": "id",
+            "nullable": false,
+            "type": "integer",
+            "unique": true
+          },
+          {
+            "name": "name",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "country",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "born",
+            "nullable": true,
+            "type": "integer"
+          }
+        ],
+        "source": "baseline"
+      },
+      {
+        "labels": [
+          "Books"
+        ],
+        "name": "Books",
+        "properties": [
+          {
+            "indexed": true,
+            "name": "id",
+            "nullable": false,
+            "type": "integer",
+            "unique": true
+          },
+          {
+            "name": "title",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "author_id",
+            "nullable": true,
+            "type": "integer"
+          },
+          {
+            "name": "genre",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "published",
+            "nullable": true,
+            "type": "integer"
+          }
+        ],
+        "source": "baseline"
+      },
+      {
+        "labels": [
+          "Loans"
+        ],
+        "name": "Loans",
+        "properties": [
+          {
+            "indexed": true,
+            "name": "id",
+            "nullable": false,
+            "type": "integer",
+            "unique": true
+          },
+          {
+            "name": "book_id",
+            "nullable": true,
+            "type": "integer"
+          },
+          {
+            "name": "member_id",
+            "nullable": true,
+            "type": "integer"
+          },
+          {
+            "name": "loaned_on",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "returned_on",
+            "nullable": true,
+            "type": "string"
+          }
+        ],
+        "source": "baseline"
+      },
+      {
+        "labels": [
+          "Members"
+        ],
+        "name": "Members",
+        "properties": [
+          {
+            "indexed": true,
+            "name": "id",
+            "nullable": false,
+            "type": "integer",
+            "unique": true
+          },
+          {
+            "name": "name",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "city",
+            "nullable": true,
+            "type": "string"
+          },
+          {
+            "name": "joined",
+            "nullable": true,
+            "type": "string"
+          }
+        ],
+        "source": "baseline"
+      }
+    ],
+    "properties": [],
+    "relationships": [
+      {
+        "cardinality": "1:N",
+        "confidence": 0.85,
+        "fromEntity": "Books",
+        "inferred": true,
+        "properties": [],
+        "source": "baseline",
+        "toEntity": "Authors",
+        "type": "Books_Authors"
+      },
+      {
+        "cardinality": "1:N",
+        "confidence": 0.85,
+        "fromEntity": "Loans",
+        "inferred": true,
+        "properties": [],
+        "source": "baseline",
+        "toEntity": "Books",
+        "type": "Loans_Books"
+      },
+      {
+        "cardinality": "1:N",
+        "confidence": 0.85,
+        "fromEntity": "Loans",
+        "inferred": true,
+        "properties": [],
+        "source": "baseline",
+        "toEntity": "Members",
+        "type": "Loans_Members"
+      }
+    ]
+  },
+  "metadata": {
+    "analyzedCollectionCounts": {
+      "documentCollections": 4,
+      "edgeCollections": 3
+    },
+    "assumptions": [
+      "No foreign keys were declared; 3 relationship(s) were inferred from naming heuristics (review)."
+    ],
+    "confidence": 0.64,
+    "detectedPatterns": [
+      "inferred_foreign_keys"
+    ],
+    "generator": "relational-schema-analyzer",
+    "physicalSchemaFingerprint": "sha256-f2e64f2c0184ab57b6e33514073b4a23204bf39a6c7a6a0d539e7232d2c46664",
+    "reviewRequired": true,
+    "version": "0.1.0",
+    "warnings": []
+  },
+  "physicalMapping": {
+    "entities": {
+      "Authors": {
+        "primaryKey": [
+          "id"
+        ],
+        "properties": {
+          "born": {
+            "field": "born",
+            "nullable": true,
+            "sqlType": "integer"
+          },
+          "country": {
+            "field": "country",
+            "nullable": true,
+            "sqlType": "text"
+          },
+          "id": {
+            "field": "id",
+            "indexed": true,
+            "nullable": false,
+            "sqlType": "integer",
+            "unique": true
+          },
+          "name": {
+            "field": "name",
+            "nullable": true,
+            "sqlType": "text"
+          }
+        },
+        "style": "TABLE",
+        "tableName": "authors"
+      },
+      "Books": {
+        "primaryKey": [
+          "id"
+        ],
+        "properties": {
+          "author_id": {
+            "field": "author_id",
+            "nullable": true,
+            "sqlType": "integer"
+          },
+          "genre": {
+            "field": "genre",
+            "nullable": true,
+            "sqlType": "text"
+          },
+          "id": {
+            "field": "id",
+            "indexed": true,
+            "nullable": false,
+            "sqlType": "integer",
+            "unique": true
+          },
+          "published": {
+            "field": "published",
+            "nullable": true,
+            "sqlType": "integer"
+          },
+          "title": {
+            "field": "title",
+            "nullable": true,
+            "sqlType": "text"
+          }
+        },
+        "style": "TABLE",
+        "tableName": "books"
+      },
+      "Loans": {
+        "primaryKey": [
+          "id"
+        ],
+        "properties": {
+          "book_id": {
+            "field": "book_id",
+            "nullable": true,
+            "sqlType": "integer"
+          },
+          "id": {
+            "field": "id",
+            "indexed": true,
+            "nullable": false,
+            "sqlType": "integer",
+            "unique": true
+          },
+          "loaned_on": {
+            "field": "loaned_on",
+            "nullable": true,
+            "sqlType": "text"
+          },
+          "member_id": {
+            "field": "member_id",
+            "nullable": true,
+            "sqlType": "integer"
+          },
+          "returned_on": {
+            "field": "returned_on",
+            "nullable": true,
+            "sqlType": "text"
+          }
+        },
+        "style": "TABLE",
+        "tableName": "loans"
+      },
+      "Members": {
+        "primaryKey": [
+          "id"
+        ],
+        "properties": {
+          "city": {
+            "field": "city",
+            "nullable": true,
+            "sqlType": "text"
+          },
+          "id": {
+            "field": "id",
+            "indexed": true,
+            "nullable": false,
+            "sqlType": "integer",
+            "unique": true
+          },
+          "joined": {
+            "field": "joined",
+            "nullable": true,
+            "sqlType": "text"
+          },
+          "name": {
+            "field": "name",
+            "nullable": true,
+            "sqlType": "text"
+          }
+        },
+        "style": "TABLE",
+        "tableName": "members"
+      }
+    },
+    "relationships": {
+      "Books_Authors": {
+        "fromColumns": [
+          "author_id"
+        ],
+        "fromTable": "books",
+        "inferred": true,
+        "style": "FOREIGN_KEY",
+        "toColumns": [
+          "id"
+        ],
+        "toTable": "authors"
+      },
+      "Loans_Books": {
+        "fromColumns": [
+          "book_id"
+        ],
+        "fromTable": "loans",
+        "inferred": true,
+        "style": "FOREIGN_KEY",
+        "toColumns": [
+          "id"
+        ],
+        "toTable": "books"
+      },
+      "Loans_Members": {
+        "fromColumns": [
+          "member_id"
+        ],
+        "fromTable": "loans",
+        "inferred": true,
+        "style": "FOREIGN_KEY",
+        "toColumns": [
+          "id"
+        ],
+        "toTable": "members"
+      }
+    }
+  }
+}
