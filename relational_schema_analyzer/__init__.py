@@ -31,13 +31,14 @@ from .fk_inference import (
     create_value_sampler,
     infer_foreign_keys,
 )
+from .exports import export_bundle
 from .mapping import PhysicalMapping
 from .metadata import fingerprint_physical_schema
+from .owl_export import export_owl_jsonld, export_owl_turtle
 from .schema_diff import diff_schemas
 from .topo_sort import topological_sort_tables
 from .types import Column, ForeignKey, PhysicalSchema, Schema, Table
 
-# export_bundle / export_owl_turtle / export_owl_jsonld land in Phase 3.
 __all__ = [
     "__version__",
     # Phase 1 — physical core
@@ -62,4 +63,8 @@ __all__ = [
     "ConceptualSchema",
     "PhysicalMapping",
     "fingerprint_physical_schema",
+    # Phase 3 — exports
+    "export_bundle",
+    "export_owl_turtle",
+    "export_owl_jsonld",
 ]

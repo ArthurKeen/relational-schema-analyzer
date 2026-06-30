@@ -118,14 +118,26 @@ Exit criteria:
 
 ## Phase 3 — Exports & tool contract
 
-- [ ] `exports.py` — `export_bundle()` (tool-contract JSON), target-specific views
-- [ ] `owl_export.py` — Turtle + JSON-LD with `phys:*` annotations (DESIGN §5)
-- [ ] `cli.py` — `snapshot` / `analyze` / `owl` subcommands; stdin/stdout JSON contract
-- [ ] validate emitted bundles against the JSON Schema in CI
+- [x] `exports.py` — `export_bundle()` (tool-contract JSON; accepts `Analysis` or dict).
+      SQL-native physical "views" remain a future addition.
+- [x] `owl_export.py` — Turtle + JSON-LD with `phys:*` annotations (DESIGN §5): `owl:Class`
+      per entity (+ `rdfs:subClassOf`), `owl:DatatypeProperty` per column (PK/unique →
+      `owl:FunctionalProperty` + `owl:InverseFunctionalProperty`), `owl:ObjectProperty` per
+      relationship (domain/range, functional/inverse from cardinality), `phys:*` back-links.
+      Default IRIs keep the `arangodb.com` host (physical ns identical to the Arango
+      analyzer); both overridable.
+- [x] `cli.py` — `snapshot` / `analyze` / `owl` subcommands; live source (`--source`/`--url`)
+      or offline `--from-snapshot`; `-o`/stdout, `--pretty`, `--format`, `--iri-base`/
+      `--phys-iri-base`.
+- [x] validate emitted bundles against the JSON Schema in CI (contract-conformance tests run
+      under pytest; CI installs `[dev,postgres,csv,owl]`).
 
 Exit criteria:
-- [ ] `owl --format turtle` produces a `.ttl` that `arango-ontoextract` can import
-- [ ] round-trip: OWL `phys:*` annotations resolve back to source tables/columns
+- [x] `owl --format turtle` produces a `.ttl` that parses as valid RDF (rdflib round-trip in
+      tests) using the same `phys:` namespace the ArangoDB analyzer publishes → importable by
+      `arango-ontoextract` (full cross-repo ingestion test is Phase 5)
+- [x] round-trip: OWL `phys:*` annotations resolve back to source tables/columns/FKs
+      (asserted via rdflib triple queries)
 
 ---
 

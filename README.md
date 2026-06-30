@@ -27,21 +27,30 @@ PostgreSQL / MySQL / SQL Server / Snowflake / CSV
 
 ## Status
 
-Early development. **Phases 0–2 implemented** (v0.1.0 target): the physical core
-(connectors, types, FK inference) is extracted from `r2g`, and the deterministic
-conceptual baseline (`RelationalSchemaAnalyzer.analyze`) emits a contract-valid
-`{conceptualSchema, physicalMapping, metadata}` bundle with no LLM. Next: OWL exports
-+ CLI (Phase 3). See:
+Early development. **Phases 0–3 implemented**: the physical core (connectors, types,
+FK inference) is extracted from `r2g`; the deterministic conceptual baseline emits a
+contract-valid `{conceptualSchema, physicalMapping, metadata}` bundle with no LLM; and
+OWL (Turtle / JSON-LD) exports + a CLI are in place. Next: optional LLM refinement
+(Phase 4) and ecosystem integration (Phase 5). See:
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, data model, tool contract, OWL mapping
 - [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) — phased delivery plan & extraction inventory
 
 ```python
-from relational_schema_analyzer import create_connector, RelationalSchemaAnalyzer
+from relational_schema_analyzer import (
+    create_connector, RelationalSchemaAnalyzer, export_owl_turtle,
+)
 
 physical = create_connector("postgresql", url, schema_name="public").get_schema()
 analysis = RelationalSchemaAnalyzer().analyze(physical)   # baseline, no LLM
-bundle = analysis.to_bundle()   # {conceptualSchema, physicalMapping, metadata}
+bundle = analysis.to_bundle()    # {conceptualSchema, physicalMapping, metadata}
+ttl = export_owl_turtle(analysis)
+```
+
+```bash
+relational-schema-analyzer snapshot --source postgresql --url "$DSN" -o physical.json
+relational-schema-analyzer analyze  --from-snapshot physical.json --pretty
+relational-schema-analyzer owl      --from-snapshot physical.json --format turtle -o schema.ttl
 ```
 
 ## Why this exists
