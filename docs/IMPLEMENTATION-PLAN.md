@@ -141,6 +141,33 @@ Exit criteria:
 
 ---
 
+## Phase 3.5 — Physical-model enrichment for the AOE contract
+
+Triggered by `arango-ontoextract` feedback (2026-06): AOE wants a **mapping-agnostic, rich
+physical schema model** and will own SQL→OWL/SHACL itself (it does *not* consume our OWL).
+The conceptual model + OWL stay as **optional** outputs for the other consumers.
+
+- [x] Enrich `types.py` (all additive / back-compatible): `Column` gains
+      `is_unique` / `default` / `comment` / `ordinal` + computed `type_category`;
+      `Table` gains `schema_name` / `comment` / `is_view` / `unique_constraints` /
+      `check_constraints` / `indexes`; `ForeignKey` gains `is_unique` (cardinality hint);
+      `PhysicalSchema` gains `source` provenance. New models `CheckConstraint`, `Index`,
+      `SourceProvenance`.
+- [x] `typemap.normalized_type_category()` — integer/decimal/boolean/string/temporal/
+      binary/uuid/json/array (raw type stays authoritative).
+- [x] Baseline consumes the new signals: FK `is_unique` (or FK==PK) → `1:1`; declared
+      unique columns marked `unique`/`indexed`.
+- [x] CSV connector populates provenance + ordinal + PK-uniqueness, with **opt-in**
+      low-cardinality enum sampling (`sample_enums`) → `CheckConstraint.enum_values`.
+- [x] Export the new model types; update DESIGN (consumer boundary, §3.1, S4) + tests
+      (255 total, ruff clean; CSV golden bundle regenerated).
+- [ ] **Next increment — per-dialect catalog introspection** to populate
+      unique/check/index/comment/default/view + server version for Postgres / MySQL /
+      SQL Server / Snowflake. Validated by the Phase 5 Docker integration suite (live-catalog
+      SQL can't be faithfully tested offline). Postgres + MySQL first (AOE's minimum).
+
+---
+
 ## Phase 4 — LLM refinement (optional, additive)
 
 - [ ] `providers/` interface (openai / anthropic / openrouter) — copy pattern from

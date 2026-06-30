@@ -135,3 +135,51 @@ def pg_type_to_json_type(pg_type: str) -> str:
     if base in DEFAULT_TYPE_MAP:
         return DEFAULT_TYPE_MAP[base]
     return "string"
+
+
+# Base type names that the coarse JSON map collapses to ``string``/``object`` but
+# which carry distinct XSD ranges. A richer category lets consumers (e.g.
+# arango-ontoextract) map SQL → XSD without re-deriving it from the raw type.
+_TEMPORAL_TYPES: frozenset[str] = frozenset({
+    "date", "time", "timetz", "timestamp", "timestamptz", "datetime", "datetime2",
+    "smalldatetime", "datetimeoffset", "interval", "year",
+    "time without time zone", "time with time zone",
+    "timestamp without time zone", "timestamp with time zone",
+    "timestamp_ltz", "timestamp_ntz", "timestamp_tz",
+})
+_BINARY_TYPES: frozenset[str] = frozenset({
+    "bytea", "blob", "tinyblob", "mediumblob", "longblob", "binary", "varbinary", "image",
+})
+_UUID_TYPES: frozenset[str] = frozenset({"uuid", "uniqueidentifier"})
+_JSON_TYPES: frozenset[str] = frozenset({"json", "jsonb", "variant", "object"})
+
+# JSON (coarse) category → normalized category for the non-special-cased types.
+_JSON_TO_CATEGORY: dict[str, str] = {
+    "integer": "integer",
+    "float": "decimal",
+    "boolean": "boolean",
+    "object": "json",
+    "array": "array",
+    "string": "string",
+}
+
+
+def normalized_type_category(sql_type: str) -> str:
+    """Map a raw SQL type to a normalized category for downstream XSD mapping.
+
+    Returns one of: ``integer``, ``decimal``, ``boolean``, ``string``,
+    ``temporal``, ``binary``, ``uuid``, ``json``, ``array``. The raw type string
+    remains authoritative; this is an additive hint (DESIGN §3.1 / AOE contract).
+    """
+    if _is_array_pg_type(sql_type):
+        return "array"
+    base = _base_pg_type_name(sql_type)
+    if base in _TEMPORAL_TYPES:
+        return "temporal"
+    if base in _UUID_TYPES:
+        return "uuid"
+    if base in _BINARY_TYPES:
+        return "binary"
+    if base in _JSON_TYPES:
+        return "json"
+    return _JSON_TO_CATEGORY.get(DEFAULT_TYPE_MAP.get(base, "string"), "string")

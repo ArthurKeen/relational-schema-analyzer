@@ -38,13 +38,23 @@ analyzer. Therefore the immediate consumers of this library are:
 
 | Consumer | Consumes | Contract |
 | --- | --- | --- |
-| `arango-ontoextract` | OWL Turtle + provenance | `.ttl` file + provenance dict |
+| `arango-ontoextract` (AOE) | the **rich physical schema model** + provenance | `PhysicalSchema` JSON (AOE owns SQL→OWL/SHACL) |
 | `r2g` | conceptual schema + relational physical mapping | JSON bundle (in-process import) |
 | Future SQL-native transpilers | conceptual schema + relational physical mapping | JSON bundle |
-| Tooling / docs | JSON-LD, Markdown | exports |
+| Tooling / docs | OWL Turtle / JSON-LD, Markdown | optional exports |
 
-The shared contract (chosen: **"all of the above via one tool contract"**) is the JSON
-bundle `{ conceptualSchema, physicalMapping, metadata }`, aligned 1:1 with
+> **Boundary correction (AOE feedback, 2026-06).** AOE asked this library to be a
+> **mapping-agnostic, read-only introspector**: it consumes the **rich `PhysicalSchema`
+> model** (tables/views, columns with raw SQL type + nullability + default + comment +
+> ordinal, PKs, FKs **with a unique/cardinality hint**, unique constraints, CHECK
+> constraints, indexes, provenance, normalized type category) and does the SQL→OWL/SHACL
+> mapping **itself** — exactly as its `_direct_extract_schema` owns the ArangoDB→OWL mapping.
+> So AOE does **not** consume our OWL. We keep the conceptual model + OWL exports as
+> **optional** outputs for the *other* consumers (`r2g`, future transpilers, standalone
+> ontology tooling); the **physical model is the first-class deliverable** for AOE.
+
+The shared contract for the conceptual consumers is still the JSON bundle
+`{ conceptualSchema, physicalMapping, metadata }`, aligned 1:1 with
 `arango-schema-mapper/docs/tool-contract/v1/`, with a relational `physicalMapping` variant.
 
 ### Goals & success criteria
@@ -57,8 +67,10 @@ bundle `{ conceptualSchema, physicalMapping, metadata }`, aligned 1:1 with
   relational physical mapping with **no LLM**; LLM is additive refinement only.
 - **G3 — Contract interchangeability.** Emit the same tool-contract bundle shape as
   `arango-schema-analyzer` so one downstream consumer handles relational and Arango sources.
-- **G4 — Ontology-ready exports.** Emit OWL Turtle / JSON-LD with physical back-links that
-  `arango-ontoextract` can ingest unchanged.
+- **G4 — Rich physical model for AOE.** Emit a typed, serializable `PhysicalSchema` carrying
+  everything AOE needs to do its own SQL→OWL/SHACL mapping (constraints, indexes, comments,
+  defaults, FK cardinality hint, provenance, normalized type category). OWL Turtle / JSON-LD
+  remain **optional** exports for standalone / non-AOE consumers.
 
 **Success criteria** (consumer-level, testable)
 
@@ -67,9 +79,9 @@ bundle `{ conceptualSchema, physicalMapping, metadata }`, aligned 1:1 with
 | S1 | `create_connector(type, url).get_schema()` returns a faithful `PhysicalSchema` for PG / MySQL / SQL Server / Snowflake / CSV | ported connector tests against r2g's `docker/` fixtures |
 | S2 | `analyze()` emits a bundle that validates against `docs/tool-contract/v1/response.schema.json` with `llm_provider=None` | schema validation in CI on Pagila / Chinook / Northwind |
 | S3 | Ambiguous constructs (inferred FKs, shared-PK inheritance, >2-FK join tables) set `reviewRequired=true` rather than guessing silently | golden-bundle assertions |
-| S4 | `arango-ontoextract` ingests our `export_owl_turtle()` output + provenance dict with **zero code changes** on its side | round-trip integration test (Phase 5) |
+| S4 | `arango-ontoextract` consumes our `PhysicalSchema` (constraints, indexes, comments, FK unique hint, provenance, type category) and does its own SQL→OWL/SHACL mapping with **no re-querying** | AOE integration (Phase 5); physical-model completeness tests now |
 | S5 | `r2g` builds and its existing test suite passes after replacing embedded modules with imports from this library | r2g CI on the integration PR |
-| S6 | OWL `phys:*` annotations resolve back to the exact source table/column/FK they came from | round-trip assertion in OWL export tests |
+| S6 | (Optional OWL path) `phys:*` annotations resolve back to the exact source table/column/FK they came from | round-trip assertion in OWL export tests |
 
 ---
 
@@ -112,33 +124,49 @@ recognition, naming, denormalization detection), not structural recovery.
 
 ## 3. Data model
 
-### 3.1 Physical schema (lifted from `r2g/src/r2g/types.py`)
+### 3.1 Physical schema (extracted from `r2g`, enriched for the AOE contract)
+
+The core (`Schema`/`Table`/`Column`/`ForeignKey`) was lifted verbatim from
+`r2g/src/r2g/types.py` so the extraction stayed mechanical and r2g can re-import it. It
+was then **enriched additively** (all new fields default, so r2g re-import is unaffected)
+to carry everything AOE needs for its own SQL→OWL/SHACL mapping:
 
 ```text
 PhysicalSchema
-  name: str
-  source_type: "postgresql" | "mysql" | "sqlserver" | "snowflake" | "csv"
-  namespace: str | None          # pg schema / mssql "dbo" / snowflake schema / mysql db
-  tables: list[Table]
+  tables: dict[str, Table]
+  source: SourceProvenance | None        # dialect, server_version, database, namespace
 
 Table
   name: str
   columns: list[Column]
-  primary_key: list[str]         # supports composite PKs
+  primary_key: list[str]                 # composite-safe
   foreign_keys: list[ForeignKey]
-  is_partitioned / partition_of  # PG partition metadata (already in r2g)
+  is_partitioned / partition_of          # PG partition metadata (from r2g)
+  schema_name: str | None                # namespace
+  comment: str | None
+  is_view: bool
+  unique_constraints: list[list[str]]    # single + composite
+  check_constraints: list[CheckConstraint]
+  indexes: list[Index]
 
 Column
-  name / type / nullable / unique / default
+  name / data_type (raw SQL type) / is_nullable / is_primary_key
+  is_unique / default / comment / ordinal
+  type_category  (computed: integer|decimal|boolean|string|temporal|binary|uuid|json|array)
 
 ForeignKey
-  columns: list[str]             # composite-safe
-  ref_table: str
-  ref_columns: list[str]
+  columns / foreign_table / foreign_columns / constraint_name
+  is_unique                              # cardinality hint: FK unique → 1:1 vs many:1
+
+CheckConstraint   name? / expression / columns / enum_values?   # col IN (...) recognized
+Index             name / columns / is_unique / is_primary
+SourceProvenance  dialect / server_version / database / namespace
 ```
 
-This is intentionally identical to r2g's current `Schema`/`Table`/`Column`/`ForeignKey`
-so the extraction is mechanical and r2g can import it back unchanged.
+The **model** lands first (fully testable, exercised end-to-end by the CSV connector). The
+per-dialect catalog introspection that *populates* unique/check/index/comment/default
+fields for Postgres/MySQL/SQL Server/Snowflake is the next increment, validated by the
+Phase 5 Docker integration suite (we can't faithfully test live-catalog SQL offline).
 
 ### 3.2 Conceptual schema (new; mirrors `schema_analyzer/conceptual.py`)
 

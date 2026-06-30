@@ -75,16 +75,21 @@ def _build_entity_name_map(schema: PhysicalSchema) -> dict[str, str]:
     return mapping
 
 
+def _is_key_column(col: Any, pk: list[str]) -> bool:
+    """A column is a key when it's a single-column PK or a declared unique column."""
+    return bool(getattr(col, "is_unique", False)) or (col.name in pk and len(pk) == 1)
+
+
 def _property_def(col: Any, pk: list[str]) -> dict[str, Any]:
     prop: dict[str, Any] = {
         "name": col.name,
         "type": pg_type_to_json_type(col.data_type),
         "nullable": bool(col.is_nullable),
     }
-    if col.name in pk:
+    if col.name in pk or _is_key_column(col, pk):
         prop["indexed"] = True
-        if len(pk) == 1:
-            prop["unique"] = True
+    if _is_key_column(col, pk):
+        prop["unique"] = True
     return prop
 
 
@@ -96,15 +101,17 @@ def _physical_property(col: Any, pk: list[str]) -> dict[str, Any]:
         "sqlType": col.data_type,
         "nullable": bool(col.is_nullable),
     }
-    if col.name in pk:
+    if col.name in pk or _is_key_column(col, pk):
         entry["indexed"] = True
-        if len(pk) == 1:
-            entry["unique"] = True
+    if _is_key_column(col, pk):
+        entry["unique"] = True
     return entry
 
 
 def _cardinality_for_fk(fk: ForeignKey, local: Table) -> str:
-    """``1:1`` when the FK columns are exactly the local PK, else ``1:N``."""
+    """``1:1`` when the FK is itself unique (or equals the local PK), else ``1:N``."""
+    if getattr(fk, "is_unique", False):
+        return "1:1"
     if local.primary_key and set(fk.columns) == set(local.primary_key):
         return "1:1"
     return "1:N"

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, model_serializer, model_validator
+from pydantic import BaseModel, computed_field, model_serializer, model_validator
+
+from .typemap import normalized_type_category
 
 
 class ForeignKey(BaseModel):
@@ -28,6 +30,10 @@ class ForeignKey(BaseModel):
     foreign_table: str
     foreign_columns: List[str]
     constraint_name: Optional[str] = None
+    # Cardinality hint: when the FK columns are themselves unique on the source
+    # table, the relationship is 1:1 (vs. many:1). Lets consumers decide
+    # functional vs. non-functional object properties (AOE contract).
+    is_unique: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -62,6 +68,8 @@ class ForeignKey(BaseModel):
             d["foreign_columns"] = self.foreign_columns
         if self.constraint_name is not None:
             d["constraint_name"] = self.constraint_name
+        if self.is_unique:
+            d["is_unique"] = True
         return d
 
 
@@ -70,6 +78,33 @@ class Column(BaseModel):
     data_type: str
     is_nullable: bool = False
     is_primary_key: bool = False
+    # Enrichment for downstream OWL/SHACL mapping (AOE contract). All optional /
+    # back-compatible; older snapshots and the r2g re-import path are unaffected.
+    is_unique: bool = False
+    default: Optional[str] = None
+    comment: Optional[str] = None
+    ordinal: Optional[int] = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def type_category(self) -> str:
+        """Normalized type category derived from ``data_type`` (see typemap)."""
+        return normalized_type_category(self.data_type)
+
+
+class CheckConstraint(BaseModel):
+    name: Optional[str] = None
+    expression: str
+    columns: List[str] = []
+    # Best-effort recognition of ``col IN (...)`` → candidate enum values.
+    enum_values: Optional[List[str]] = None
+
+
+class Index(BaseModel):
+    name: str
+    columns: List[str]
+    is_unique: bool = False
+    is_primary: bool = False
 
 
 class Table(BaseModel):
@@ -85,10 +120,27 @@ class Table(BaseModel):
     # during introspection.
     is_partitioned: bool = False
     partition_of: Optional[str] = None
+    # Enrichment (AOE contract). All optional / back-compatible.
+    schema_name: Optional[str] = None
+    comment: Optional[str] = None
+    is_view: bool = False
+    unique_constraints: List[List[str]] = []
+    check_constraints: List[CheckConstraint] = []
+    indexes: List[Index] = []
+
+
+class SourceProvenance(BaseModel):
+    """Where a physical schema was introspected from (AOE stamps this per class)."""
+
+    dialect: Optional[str] = None
+    server_version: Optional[str] = None
+    database: Optional[str] = None
+    namespace: Optional[str] = None
 
 
 class PhysicalSchema(BaseModel):
     tables: Dict[str, Table] = {}
+    source: Optional[SourceProvenance] = None
 
     def save_to_file(self, path: str) -> None:
         with open(path, "w") as f:

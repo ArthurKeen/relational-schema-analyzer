@@ -36,7 +36,7 @@ import polars as pl
 from ..dump_reader import DumpReader
 from ..log import get_logger
 from ..naming import singularize
-from ..types import Column, Schema, Table
+from ..types import CheckConstraint, Column, Schema, SourceProvenance, Table
 
 logger = get_logger(__name__)
 
@@ -128,12 +128,18 @@ class CsvConnector:
         delimiter: str = ",",
         has_header: bool = True,
         sample_rows: int = 1000,
+        sample_enums: bool = False,
+        enum_threshold: int = 25,
     ) -> None:
         self.connection_string = connection_string
         self.schema_name = schema_name
         self.delimiter = delimiter
         self.has_header = has_header
         self.sample_rows = sample_rows
+        # Opt-in light sampling: low-cardinality columns → enum candidates
+        # (feeding downstream sh:in). Off by default (AOE contract §5).
+        self.sample_enums = sample_enums
+        self.enum_threshold = enum_threshold
         self.directory = resolve_source_directory(connection_string)
 
     def _table_files(self) -> dict[str, Path]:
@@ -151,7 +157,9 @@ class CsvConnector:
         return files
 
     def get_schema(self) -> Schema:
-        schema = Schema()
+        schema = Schema(
+            source=SourceProvenance(dialect="csv", database=self.directory.name)
+        )
         for table_name, path in self._table_files().items():
             schema.tables[table_name] = self._process_file(table_name, path)
         return schema
@@ -179,9 +187,10 @@ class CsvConnector:
 
         pk = self._detect_primary_key(table_name, frame)
         pk_set = set(pk)
+        single_pk = len(pk) == 1
 
         columns: list[Column] = []
-        for col_name, dtype in zip(frame.columns, frame.dtypes):
+        for ordinal, (col_name, dtype) in enumerate(zip(frame.columns, frame.dtypes)):
             is_pk = col_name in pk_set
             columns.append(
                 Column(
@@ -189,10 +198,48 @@ class CsvConnector:
                     data_type=_polars_dtype_to_type(dtype),
                     is_nullable=not is_pk,
                     is_primary_key=is_pk,
+                    # CSV has no declared constraints; the only honest uniqueness
+                    # signal is the sampled single-column primary key.
+                    is_unique=is_pk and single_pk,
+                    ordinal=ordinal,
                 )
             )
 
-        return Table(name=table_name, columns=columns, primary_key=pk, foreign_keys=[])
+        checks = self._enum_candidates(frame, pk_set) if self.sample_enums else []
+        return Table(
+            name=table_name,
+            columns=columns,
+            primary_key=pk,
+            foreign_keys=[],
+            check_constraints=checks,
+        )
+
+    def _enum_candidates(
+        self, frame: "pl.DataFrame", pk_set: set[str]
+    ) -> list[CheckConstraint]:
+        """Opt-in: low-cardinality non-key columns → candidate enum constraints."""
+        if frame.height == 0:
+            return []
+        out: list[CheckConstraint] = []
+        for col in frame.columns:
+            if col in pk_set:
+                continue
+            series = frame.get_column(col).drop_nulls()
+            if series.len() == 0:
+                continue
+            distinct = series.n_unique()
+            if 1 <= distinct <= self.enum_threshold and distinct < series.len():
+                values = sorted(str(v) for v in series.unique().to_list())
+                joined = ", ".join(repr(v) for v in values)
+                out.append(
+                    CheckConstraint(
+                        name=f"{col}_enum",
+                        expression=f"{col} IN ({joined})",
+                        columns=[col],
+                        enum_values=values,
+                    )
+                )
+        return out
 
     @staticmethod
     def _is_unique_key(frame: "pl.DataFrame", col: str) -> bool:

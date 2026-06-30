@@ -183,7 +183,7 @@
       "inferred_foreign_keys"
     ],
     "generator": "relational-schema-analyzer",
-    "physicalSchemaFingerprint": "sha256-f2e64f2c0184ab57b6e33514073b4a23204bf39a6c7a6a0d539e7232d2c46664",
+    "physicalSchemaFingerprint": "sha256-9a979e556be2d0cfd4befa39235bd2f1bda9403362cd58f02f97b80856fc8176",
     "reviewRequired": true,
     "version": "0.1.0",
     "warnings": []

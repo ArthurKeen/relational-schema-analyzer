@@ -37,7 +37,16 @@ from .metadata import fingerprint_physical_schema
 from .owl_export import export_owl_jsonld, export_owl_turtle
 from .schema_diff import diff_schemas
 from .topo_sort import topological_sort_tables
-from .types import Column, ForeignKey, PhysicalSchema, Schema, Table
+from .types import (
+    CheckConstraint,
+    Column,
+    ForeignKey,
+    Index,
+    PhysicalSchema,
+    Schema,
+    SourceProvenance,
+    Table,
+)
 
 __all__ = [
     "__version__",
@@ -51,6 +60,9 @@ __all__ = [
     "Table",
     "Column",
     "ForeignKey",
+    "Index",
+    "CheckConstraint",
+    "SourceProvenance",
     "diff_schemas",
     "topological_sort_tables",
     "infer_foreign_keys",
