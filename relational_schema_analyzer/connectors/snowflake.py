@@ -56,7 +56,7 @@ from typing import Any, Iterator, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..log import get_logger
-from ..types import Column, ForeignKey, Schema, Table
+from ..types import Column, ForeignKey, Schema, SourceProvenance, Table
 
 logger = get_logger(__name__)
 
@@ -135,15 +135,15 @@ class SnowflakeConnector:
                 pass
 
     def _introspect(self, conn: Any) -> Schema:
-        schema = Schema()
+        schema = Schema(source=self._provenance(conn))
         cur = conn.cursor()
         try:
             cur.execute(
                 f"""
-                SELECT TABLE_NAME
+                SELECT TABLE_NAME, TABLE_TYPE, COMMENT
                 FROM {self._database}.INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_SCHEMA = %s
-                  AND TABLE_TYPE = 'BASE TABLE'
+                  AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
                 ORDER BY TABLE_NAME
                 """,
                 (self.schema_name,),
@@ -152,26 +152,66 @@ class SnowflakeConnector:
         finally:
             cur.close()
 
-        table_names = [row[0] for row in table_rows]
-
-        for table_name in table_names:
-            schema.tables[table_name] = self._process_table(conn, table_name)
+        for name, table_type, comment in table_rows:
+            schema.tables[name] = self._process_table(
+                conn, name, is_view=(table_type == "VIEW"), comment=comment
+            )
 
         return schema
 
-    def _process_table(self, conn: Any, table_name: str) -> Table:
+    def _provenance(self, conn: Any) -> SourceProvenance:
+        version: Optional[str] = None
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT CURRENT_VERSION()")
+            row = cur.fetchone()
+            if row and row[0]:
+                version = str(row[0])
+        except Exception:  # noqa: BLE001 - provenance is best-effort
+            version = None
+        finally:
+            cur.close()
+        return SourceProvenance(
+            dialect="snowflake",
+            server_version=version,
+            database=self._database,
+            namespace=self.schema_name,
+        )
+
+    def _process_table(
+        self, conn: Any, table_name: str, *, is_view: bool = False, comment: Any = None
+    ) -> Table:
         columns = self._fetch_columns(conn, table_name)
         pks = self._fetch_primary_key(conn, table_name)
         fks = self._fetch_foreign_keys(conn, table_name)
+        uniques = self._fetch_unique_constraints(conn, table_name)
 
+        pk_set = set(pks)
+        # A column is unique if it's a single-column PK or a single-column UNIQUE key.
+        single_unique_cols = {u[0] for u in uniques if len(u) == 1}
+        if len(pks) == 1:
+            single_unique_cols.add(pks[0])
         for col in columns:
-            col.is_primary_key = col.name in pks
+            col.is_primary_key = col.name in pk_set
+            col.is_unique = col.name in single_unique_cols
+
+        # FK cardinality hint: the FK is 1:1 when its columns form a unique key
+        # (or the whole PK) on this table.
+        unique_sets = [set(u) for u in uniques]
+        if pks:
+            unique_sets.append(set(pks))
+        for fk in fks:
+            fk.is_unique = set(fk.columns) in unique_sets
 
         return Table(
             name=table_name,
             columns=columns,
             primary_key=pks,
             foreign_keys=fks,
+            is_view=is_view,
+            comment=(str(comment) if comment else None),
+            schema_name=self.schema_name,
+            unique_constraints=[list(u) for u in uniques],
         )
 
     def _fetch_columns(self, conn: Any, table_name: str) -> list[Column]:
@@ -179,7 +219,8 @@ class SnowflakeConnector:
         try:
             cur.execute(
                 f"""
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE,
+                       COLUMN_DEFAULT, ORDINAL_POSITION, COMMENT
                 FROM {self._database}.INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
                 ORDER BY ORDINAL_POSITION
@@ -190,16 +231,51 @@ class SnowflakeConnector:
         finally:
             cur.close()
         columns: list[Column] = []
-        for name, data_type, is_nullable in rows:
+        for name, data_type, is_nullable, default, ordinal, comment in rows:
             columns.append(
                 Column(
                     name=name,
                     data_type=(data_type or "").lower(),
                     is_nullable=(is_nullable == "YES"),
                     is_primary_key=False,
+                    default=(str(default) if default is not None else None),
+                    comment=(str(comment) if comment else None),
+                    ordinal=(_safe_int(ordinal) - 1 if ordinal is not None else None),
                 )
             )
         return columns
+
+    def _fetch_unique_constraints(self, conn: Any, table_name: str) -> list[list[str]]:
+        """Return unique-key column sets via ``SHOW UNIQUE KEYS`` (best-effort).
+
+        Snowflake unique constraints are declarative (not enforced). Grouped by
+        constraint name and ordered by key sequence.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f'SHOW UNIQUE KEYS IN TABLE "{self._database}"."{self.schema_name}"."{table_name}"'
+            )
+            rows = cur.fetchall()
+            columns = [d[0] for d in (cur.description or [])]
+        except Exception:  # noqa: BLE001 - unique keys are optional
+            return []
+        finally:
+            cur.close()
+        if not rows:
+            return []
+        col_ix = {c.lower(): i for i, c in enumerate(columns)}
+        name_ix = col_ix.get("constraint_name")
+        col_name_ix = col_ix.get("column_name")
+        seq_ix = col_ix.get("key_sequence")
+        if col_name_ix is None:
+            return []
+        grouped: OrderedDict[str, list[tuple[int, str]]] = OrderedDict()
+        for i, row in enumerate(rows):
+            cname = row[name_ix] if name_ix is not None else str(i)
+            seq = _safe_int(row[seq_ix]) if seq_ix is not None else i
+            grouped.setdefault(cname, []).append((seq, row[col_name_ix]))
+        return [[c for _, c in sorted(pairs)] for pairs in grouped.values()]
 
     def _fetch_primary_key(self, conn: Any, table_name: str) -> list[str]:
         """Return primary-key column names, ordered by key position.
@@ -267,21 +343,30 @@ class SnowflakeConnector:
             )
             return []
 
+        def _ident(value: Any) -> Optional[str]:
+            """Accept a plausible identifier only (guards against malformed rows,
+            e.g. some emulators misalign columns and yield an int here)."""
+            if not isinstance(value, str):
+                return None
+            v = value.strip()
+            return v or None
+
         grouped: OrderedDict[str, dict[str, Any]] = OrderedDict()
         for row in rows:
-            cname = row[constraint_ix] if constraint_ix is not None else row[foreign_table_ix]
+            local = _ident(row[local_ix])
+            foreign_table = _ident(row[foreign_table_ix])
+            foreign_col = _ident(row[foreign_col_ix])
+            if local is None or foreign_table is None or foreign_col is None:
+                # Malformed / non-FK row (e.g. an emulator echoing the PK): skip.
+                continue
+            cname = _ident(row[constraint_ix]) if constraint_ix is not None else None
+            key = cname or foreign_table
             bucket = grouped.setdefault(
-                cname,
-                {
-                    "columns": [],
-                    "foreign_columns": [],
-                    "foreign_table": row[foreign_table_ix],
-                    "constraint_name": cname,
-                    "_pairs": [],
-                },
+                key,
+                {"foreign_table": foreign_table, "constraint_name": cname, "_pairs": []},
             )
             seq = _safe_int(row[key_seq_ix]) if key_seq_ix is not None else len(bucket["_pairs"])
-            bucket["_pairs"].append((seq, row[local_ix], row[foreign_col_ix]))
+            bucket["_pairs"].append((seq, local, foreign_col))
 
         fks: list[ForeignKey] = []
         for bucket in grouped.values():

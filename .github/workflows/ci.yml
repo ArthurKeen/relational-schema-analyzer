@@ -25,8 +25,11 @@ jobs:
           python -m pip install --upgrade pip
           # postgres: psycopg is imported eagerly by the PG connector module.
           # csv: polars backs the CSV connector. owl: rdflib for OWL round-trip tests.
-          # mysql/mssql/snowflake drivers are intentionally NOT installed so their
-          # "missing driver" paths are tested.
+          # dev pulls fakesnow + snowflake-connector-python for the always-on
+          # Snowflake conformance tests (embedded emulator, no cloud).
+          # mysql/mssql drivers are intentionally NOT installed so their
+          # "missing driver" paths are tested. Live-DB tests are opt-in (see
+          # integration.yml) and skip here because RUN_INTEGRATION is unset.
           python -m pip install -e ".[dev,postgres,csv,owl]"
 
       - name: Ruff

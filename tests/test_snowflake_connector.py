@@ -141,19 +141,21 @@ def _install_fake_snowflake(monkeypatch, connect_fn):
 class TestIntrospection:
     def _scripted_schema(self) -> dict[str, tuple]:
         return {
-            # tables list
+            "SELECT CURRENT_VERSION": (["CURRENT_VERSION()"], [("8.1.0",)]),
+            # tables list (name, type, comment)
             "INFORMATION_SCHEMA.TABLES": (
-                ["TABLE_NAME"],
-                [("USERS",), ("ORDERS",)],
+                ["TABLE_NAME", "TABLE_TYPE", "COMMENT"],
+                [("USERS", "BASE TABLE", "people"), ("ORDERS", "BASE TABLE", None)],
             ),
-            # columns for any table
+            # columns for any table (name, type, nullable, default, ordinal, comment)
             "INFORMATION_SCHEMA.COLUMNS": (
-                ["COLUMN_NAME", "DATA_TYPE", "IS_NULLABLE"],
+                ["COLUMN_NAME", "DATA_TYPE", "IS_NULLABLE",
+                 "COLUMN_DEFAULT", "ORDINAL_POSITION", "COMMENT"],
                 [
-                    ("ID", "NUMBER", "NO"),
-                    ("NAME", "TEXT", "YES"),
-                    ("METADATA", "VARIANT", "YES"),
-                    ("CREATED_AT", "TIMESTAMP_NTZ", "YES"),
+                    ("ID", "NUMBER", "NO", None, 1, None),
+                    ("NAME", "TEXT", "YES", None, 2, None),
+                    ("METADATA", "VARIANT", "YES", None, 3, None),
+                    ("CREATED_AT", "TIMESTAMP_NTZ", "YES", None, 4, None),
                 ],
             ),
             # SHOW PRIMARY KEYS
@@ -161,6 +163,12 @@ class TestIntrospection:
                 ["created_on", "database_name", "schema_name", "table_name",
                  "column_name", "key_sequence", "constraint_name"],
                 [("x", "ANALYTICS", "CORE", "USERS", "ID", 1, "PK_USERS")],
+            ),
+            # SHOW UNIQUE KEYS
+            "SHOW UNIQUE KEYS": (
+                ["created_on", "database_name", "schema_name", "table_name",
+                 "column_name", "key_sequence", "constraint_name"],
+                [],
             ),
             # SHOW IMPORTED KEYS
             "SHOW IMPORTED KEYS": (

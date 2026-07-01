@@ -1,0 +1,62 @@
+name: Integration (live databases)
+
+# Live-DB conformance against Docker service containers. Runs the opt-in
+# `integration` tests (RUN_INTEGRATION=1) against real Postgres + MySQL. SQL
+# Server and cloud warehouses (Snowflake/Databricks) plug in via DSN env/secrets
+# using the same harness; Snowflake also has always-on embedded coverage via
+# fakesnow in the main CI workflow.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rsa_it
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_DATABASE: rsa_it
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pmysql"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (drivers under test)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,postgres,mysql,csv,owl]"
+
+      - name: Run integration conformance
+        env:
+          RUN_INTEGRATION: "1"
+          RSA_PG_DSN: postgresql://postgres:postgres@localhost:5432/rsa_it
+          RSA_MYSQL_DSN: mysql://root:mysql@localhost:3306/rsa_it
+        run: pytest -m integration -q

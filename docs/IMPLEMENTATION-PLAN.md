@@ -161,10 +161,37 @@ The conceptual model + OWL stay as **optional** outputs for the other consumers.
       low-cardinality enum sampling (`sample_enums`) → `CheckConstraint.enum_values`.
 - [x] Export the new model types; update DESIGN (consumer boundary, §3.1, S4) + tests
       (255 total, ruff clean; CSV golden bundle regenerated).
-- [ ] **Next increment — per-dialect catalog introspection** to populate
-      unique/check/index/comment/default/view + server version for Postgres / MySQL /
-      SQL Server / Snowflake. Validated by the Phase 5 Docker integration suite (live-catalog
-      SQL can't be faithfully tested offline). Postgres + MySQL first (AOE's minimum).
+- [x] **Snowflake** catalog introspection enriched: column default/ordinal/comment, table
+      comment + view flag, unique constraints (`SHOW UNIQUE KEYS`), FK cardinality hint,
+      provenance + server version (`CURRENT_VERSION()`). Validated **always-on** via
+      `fakesnow` (embedded emulator) + the mock-cursor unit tests.
+- [ ] **Next increment — per-dialect catalog introspection for Postgres / MySQL / SQL
+      Server** (unique/check/index/comment/default/view + server version). The live Docker
+      conformance harness is already in place (see Testing strategy); it currently asserts
+      core + FKs for these and widens as each dialect is enriched.
+
+---
+
+## Testing strategy (datasource matrix)
+
+Tiered so each engine is tested with the cheapest thing that still exercises the *real*
+connector code (see the conformance harness in `tests/_conformance.py`, run against every
+available backend with capability gating):
+
+| Tier | Engines | Mechanism | Where |
+| --- | --- | --- | --- |
+| Embedded (always-on) | **Snowflake** | `fakesnow` (DuckDB-backed, patches the driver in-process) | `tests/test_snowflake_fakesnow.py`, main CI |
+| Embedded (always-on) | all dialects | recorded result-set + mock-cursor unit tests | `tests/test_*_connector.py`, main CI |
+| Offline corpus (always-on) | CSV | real CSV connector + golden bundle | `tests/test_golden_csv.py`, main CI |
+| Live Docker (CI) | **Postgres, MySQL** | service containers + `RUN_INTEGRATION` conformance | `tests/integration/`, `integration.yml` |
+| Live opt-in (DSN) | SQL Server, **Snowflake**, **Databricks** | same harness, gated by a DSN env var | `tests/integration/` (skipped without DSN) |
+
+- **Snowflake** → `fakesnow` for CI (real code path, no cloud) + opt-in live via `RSA_SNOWFLAKE_DSN`.
+- **Databricks** (future connector, scope-approved) → `information_schema` introspection;
+  recorded-fixture + mock tests for CI, opt-in live smoke via `RSA_DATABRICKS_DSN`. No local
+  emulator exists; the heavy Unity-Catalog-OSS + Spark Docker path is deferred unless needed.
+- **DuckDB** (future connector, scope-approved) → embeddable, always-on, validates the
+  generic `information_schema` path.
 
 ---
 
