@@ -14,12 +14,15 @@ on:
 jobs:
   live:
     runs-on: ubuntu-latest
+    # Ephemeral throwaway databases: trust / empty-password auth so no credentials
+    # are committed (nothing for secret scanners to flag). Not a security model for
+    # anything beyond a disposable CI container on localhost.
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: rsa_it
         ports:
           - 5432:5432
@@ -31,12 +34,12 @@ jobs:
       mysql:
         image: mysql:8
         env:
-          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
           MYSQL_DATABASE: rsa_it
         ports:
           - 3306:3306
         options: >-
-          --health-cmd "mysqladmin ping -h 127.0.0.1 -pmysql"
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -57,6 +60,7 @@ jobs:
       - name: Run integration conformance
         env:
           RUN_INTEGRATION: "1"
-          RSA_PG_DSN: postgresql://postgres:postgres@localhost:5432/rsa_it
-          RSA_MYSQL_DSN: mysql://root:mysql@localhost:3306/rsa_it
+          # No credentials in the DSNs (trust / empty-password containers above).
+          RSA_PG_DSN: postgresql://postgres@localhost:5432/rsa_it
+          RSA_MYSQL_DSN: mysql://root@localhost:3306/rsa_it
         run: pytest -m integration -q

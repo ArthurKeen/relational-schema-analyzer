@@ -10,9 +10,9 @@ the resulting ``PhysicalSchema`` + capabilities, then tears the schema down.
 
 Env vars:
     RUN_INTEGRATION=1
-    RSA_PG_DSN        e.g. postgresql://user:pass@localhost:5432/rsa_it
-    RSA_MYSQL_DSN     e.g. mysql://user:pass@localhost:3306/rsa_it
-    RSA_MSSQL_DSN     e.g. mssql://sa:Passw0rd!@localhost:1433/rsa_it
+    RSA_PG_DSN        e.g. postgresql://<user>:<password>@localhost:5432/rsa_it
+    RSA_MYSQL_DSN     e.g. mysql://<user>:<password>@localhost:3306/rsa_it
+    RSA_MSSQL_DSN     e.g. mssql://<user>:<password>@localhost:1433/rsa_it
 """
 
 from __future__ import annotations
