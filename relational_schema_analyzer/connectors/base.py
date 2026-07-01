@@ -83,6 +83,7 @@ SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
     "mysql",
     "sqlserver",
     "snowflake",
+    "duckdb",
     "csv",
 )
 
@@ -192,6 +193,10 @@ def create_connector(
         from .snowflake import SnowflakeConnector
 
         return SnowflakeConnector(connection_string, schema_name=schema_name)
+    if key == "duckdb":
+        from .duckdb_source import DuckDbConnector
+
+        return DuckDbConnector(connection_string, schema_name=schema_name)
     if key == "csv":
         from .csv_source import CsvConnector
 

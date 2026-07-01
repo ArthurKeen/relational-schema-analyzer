@@ -180,6 +180,7 @@ available backend with capability gating):
 
 | Tier | Engines | Mechanism | Where |
 | --- | --- | --- | --- |
+| Embedded (always-on) | **DuckDB** | server-less; real connector over the full capability set | `tests/test_duckdb_connector.py`, main CI |
 | Embedded (always-on) | **Snowflake** | `fakesnow` (DuckDB-backed, patches the driver in-process) | `tests/test_snowflake_fakesnow.py`, main CI |
 | Embedded (always-on) | all dialects | recorded result-set + mock-cursor unit tests | `tests/test_*_connector.py`, main CI |
 | Offline corpus (always-on) | CSV | real CSV connector + golden bundle | `tests/test_golden_csv.py`, main CI |
@@ -190,8 +191,8 @@ available backend with capability gating):
 - **Databricks** (future connector, scope-approved) → `information_schema` introspection;
   recorded-fixture + mock tests for CI, opt-in live smoke via `RSA_DATABRICKS_DSN`. No local
   emulator exists; the heavy Unity-Catalog-OSS + Spark Docker path is deferred unless needed.
-- **DuckDB** (future connector, scope-approved) → embeddable, always-on, validates the
-  generic `information_schema` path.
+- **DuckDB** (implemented) → embeddable, always-on, exercises the full capability set and
+  validates the generic `information_schema` FK/PK/unique resolution the RDBMS connectors reuse.
 
 ---
 
