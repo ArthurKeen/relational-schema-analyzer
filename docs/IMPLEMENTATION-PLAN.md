@@ -192,15 +192,16 @@ available backend with capability gating):
 | --- | --- | --- | --- |
 | Embedded (always-on) | **DuckDB** | server-less; real connector over the full capability set | `tests/test_duckdb_connector.py`, main CI |
 | Embedded (always-on) | **Snowflake** | `fakesnow` (DuckDB-backed, patches the driver in-process) | `tests/test_snowflake_fakesnow.py`, main CI |
-| Embedded (always-on) | all dialects | recorded result-set + mock-cursor unit tests | `tests/test_*_connector.py`, main CI |
+| Embedded (always-on) | all dialects incl. **Databricks** | recorded result-set + mock-cursor unit tests | `tests/test_*_connector.py`, main CI |
 | Offline corpus (always-on) | CSV | real CSV connector + golden bundle | `tests/test_golden_csv.py`, main CI |
 | Live Docker (CI) | **Postgres, MySQL** | service containers + `RUN_INTEGRATION` conformance | `tests/integration/`, `integration.yml` |
 | Live opt-in (DSN) | SQL Server, **Snowflake**, **Databricks** | same harness, gated by a DSN env var | `tests/integration/` (skipped without DSN) |
 
 - **Snowflake** → `fakesnow` for CI (real code path, no cloud) + opt-in live via `RSA_SNOWFLAKE_DSN`.
-- **Databricks** (future connector, scope-approved) → `information_schema` introspection;
-  recorded-fixture + mock tests for CI, opt-in live smoke via `RSA_DATABRICKS_DSN`. No local
-  emulator exists; the heavy Unity-Catalog-OSS + Spark Docker path is deferred unless needed.
+- **Databricks** (implemented) → Unity Catalog `information_schema` introspection (three-level
+  `catalog.schema.table`); GA PK/FK/UNIQUE + comments in `information_schema`. Assembly
+  validated by mock-cursor tests (no in-process emulator exists); live smoke is opt-in via
+  `RSA_DATABRICKS_DSN`.
 - **DuckDB** (implemented) → embeddable, always-on, exercises the full capability set and
   validates the generic `information_schema` FK/PK/unique resolution the RDBMS connectors reuse.
 

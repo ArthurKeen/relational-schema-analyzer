@@ -398,9 +398,10 @@ Kafka, DDL-file parsing, and any new dialects (Oracle/SQLite).
 - Future connectors land behind the same `SourceConnector` protocol as plugins, no core
   changes required.
 - **Update (post-v0, AOE-driven).** Scope was expanded to add a **DuckDB** connector
-  (implemented — embeddable, server-less, and an always-on CI engine that validates the
-  generic `information_schema` introspection) and an approved-but-pending **Databricks**
-  connector. Both land behind the existing protocol, confirming the plugin design.
+  (embeddable, server-less, always-on CI engine) and a **Databricks** connector (Unity
+  Catalog `information_schema` — same pattern; three-level `catalog.schema.table` namespace,
+  assembly validated by mock-cursor tests, live is opt-in via `RSA_DATABRICKS_DSN`). Both
+  landed behind the existing `SourceConnector` protocol, confirming the plugin design.
 
 ### 9.4 IRI namespace — **keep the `arangodb.com` host, but make it configurable**
 
