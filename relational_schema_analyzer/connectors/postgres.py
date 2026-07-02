@@ -28,7 +28,7 @@ from typing import Any, Iterator, Optional
 import psycopg
 from psycopg.rows import dict_row, tuple_row
 
-from ..types import Column, ForeignKey, Schema, Table
+from ..types import CheckConstraint, Column, ForeignKey, Schema, SourceProvenance, Table
 
 
 def _fk_dedupe_key(fk: ForeignKey) -> tuple:
@@ -137,12 +137,18 @@ class PostgresConnector:
         try:
             with psycopg.connect(self.connection_string, row_factory=dict_row) as conn:
                 with conn.cursor() as cur:
+                    schema.source = self._provenance(cur)
+                    # Base tables, partitioned tables, and views (relkind r/p/v/m).
                     cur.execute(
                         """
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = %s
-                          AND table_type = 'BASE TABLE';
+                        SELECT c.relname AS table_name,
+                               c.relkind AS relkind,
+                               obj_description(c.oid) AS comment
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = %s
+                          AND c.relkind IN ('r', 'p', 'v', 'm')
+                        ORDER BY c.relname;
                         """,
                         (self.schema_name,),
                     )
@@ -150,7 +156,12 @@ class PostgresConnector:
 
                     for t in tables:
                         table_name = t["table_name"]
-                        schema.tables[table_name] = self._process_table(cur, table_name)
+                        schema.tables[table_name] = self._process_table(
+                            cur,
+                            table_name,
+                            is_view=t["relkind"] in ("v", "m"),
+                            comment=t["comment"],
+                        )
 
                     cur.execute(
                         """
@@ -179,10 +190,37 @@ class PostgresConnector:
         """Open a REPEATABLE READ read-only session for streaming / dumps."""
         return PostgresSession(self.connection_string, schema_name=self.schema_name)
 
-    def _process_table(self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str) -> Table:
+    def _provenance(self, cur: "psycopg.Cursor[dict[str, Any]]") -> SourceProvenance:
+        version: Optional[str] = None
+        database: Optional[str] = None
+        try:
+            cur.execute(
+                "SELECT current_database() AS db, current_setting('server_version') AS ver"
+            )
+            row = cur.fetchone()
+            if row:
+                database = row.get("db")
+                version = row.get("ver")
+        except Exception:  # noqa: BLE001 - provenance is best-effort
+            pass
+        return SourceProvenance(
+            dialect="postgresql",
+            server_version=version,
+            database=database,
+            namespace=self.schema_name,
+        )
+
+    def _process_table(
+        self,
+        cur: "psycopg.Cursor[dict[str, Any]]",
+        table_name: str,
+        *,
+        is_view: bool = False,
+        comment: Any = None,
+    ) -> Table:
         cur.execute(
             """
-            SELECT column_name, data_type, is_nullable
+            SELECT column_name, data_type, is_nullable, column_default, ordinal_position
             FROM information_schema.columns
             WHERE table_schema = %s AND table_name = %s
             ORDER BY ordinal_position;
@@ -190,6 +228,22 @@ class PostgresConnector:
             (self.schema_name, table_name),
         )
         columns_data = cur.fetchall()
+
+        # Column comments (pg keeps these in pg_description, not information_schema).
+        cur.execute(
+            """
+            SELECT a.attname AS column_name, col_description(a.attrelid, a.attnum) AS comment
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s AND c.relname = %s
+              AND a.attnum > 0 AND NOT a.attisdropped;
+            """,
+            (self.schema_name, table_name),
+        )
+        col_comments = {
+            r["column_name"]: r["comment"] for r in cur.fetchall() if r.get("comment")
+        }
 
         cur.execute(
             """
@@ -206,14 +260,25 @@ class PostgresConnector:
         )
         pks = [row["column_name"] for row in cur.fetchall()]
 
+        unique_sets = self._fetch_unique_constraints(cur, table_name)
+        single_unique = {u[0] for u in unique_sets if len(u) == 1}
+        if len(pks) == 1:
+            single_unique.add(pks[0])
+
         columns = []
         for c in columns_data:
+            name = c["column_name"]
+            ordinal = c.get("ordinal_position")
             columns.append(
                 Column(
-                    name=c["column_name"],
+                    name=name,
                     data_type=c["data_type"],
                     is_nullable=(c["is_nullable"] == "YES"),
-                    is_primary_key=(c["column_name"] in pks),
+                    is_primary_key=(name in pks),
+                    is_unique=(name in single_unique),
+                    default=c.get("column_default"),
+                    comment=col_comments.get(name),
+                    ordinal=(int(ordinal) - 1 if ordinal is not None else None),
                 )
             )
 
@@ -257,12 +322,79 @@ class PostgresConnector:
 
         fks = [ForeignKey(**v) for v in grouped.values()]
 
+        # FK cardinality hint: 1:1 when the FK columns are a unique key (or the PK).
+        unique_col_sets = [set(u) for u in unique_sets]
+        if pks:
+            unique_col_sets.append(set(pks))
+        for fk in fks:
+            fk.is_unique = set(fk.columns) in unique_col_sets
+
+        checks = self._fetch_check_constraints(cur, table_name)
+
         return Table(
             name=table_name,
             columns=columns,
             primary_key=pks,
             foreign_keys=fks,
+            is_view=is_view,
+            comment=(str(comment) if comment else None),
+            schema_name=self.schema_name,
+            unique_constraints=[list(u) for u in unique_sets],
+            check_constraints=checks,
         )
+
+    def _fetch_unique_constraints(
+        self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str
+    ) -> list[list[str]]:
+        cur.execute(
+            """
+            SELECT tc.constraint_name, kcu.column_name, kcu.ordinal_position
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'UNIQUE'
+              AND tc.table_schema = %s
+              AND tc.table_name = %s
+            ORDER BY tc.constraint_name, kcu.ordinal_position;
+            """,
+            (self.schema_name, table_name),
+        )
+        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        for row in cur.fetchall():
+            grouped.setdefault(row["constraint_name"], []).append(row["column_name"])
+        return list(grouped.values())
+
+    def _fetch_check_constraints(
+        self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str
+    ) -> list[CheckConstraint]:
+        cur.execute(
+            """
+            SELECT c.conname AS name,
+                   pg_get_constraintdef(c.oid) AS definition,
+                   array_agg(a.attname ORDER BY u.ord) AS columns
+            FROM pg_constraint c
+            JOIN pg_class cr ON c.conrelid = cr.oid
+            JOIN pg_namespace n ON cr.relnamespace = n.oid
+            LEFT JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord) ON true
+            LEFT JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+            WHERE c.contype = 'c' AND n.nspname = %s AND cr.relname = %s
+            GROUP BY c.conname, c.oid
+            ORDER BY c.conname;
+            """,
+            (self.schema_name, table_name),
+        )
+        checks: list[CheckConstraint] = []
+        for row in cur.fetchall():
+            cols = [c for c in (row.get("columns") or []) if c]
+            checks.append(
+                CheckConstraint(
+                    name=row.get("name"),
+                    expression=row.get("definition") or "",
+                    columns=cols,
+                )
+            )
+        return checks
 
 
 class PostgresSession:

@@ -26,10 +26,23 @@ from tests import _conformance as conf
 
 _RUN = os.environ.get("RUN_INTEGRATION") == "1"
 
-# Current RDBMS connectors introspect columns + PK + FK (not yet the enrichment
-# fields), so live conformance checks the core + foreign keys. Capabilities widen
-# as per-dialect enrichment lands.
-_RDBMS_CAPABILITIES = {conf.FOREIGN_KEYS}
+# Capabilities per dialect. Postgres is enriched (full set); MySQL / SQL Server
+# still introspect only columns + PK + FK until their enrichment lands, so they
+# assert core + foreign keys for now.
+_FULL_CAPABILITIES = {
+    conf.ORDINAL,
+    conf.DEFAULTS,
+    conf.COMMENTS,
+    conf.UNIQUE,
+    conf.FOREIGN_KEYS,
+    conf.VIEWS,
+    conf.PROVENANCE_VERSION,
+}
+_CAPABILITIES_BY_DIALECT = {
+    "postgresql": _FULL_CAPABILITIES,
+    "mysql": {conf.FOREIGN_KEYS},
+    "sqlserver": {conf.FOREIGN_KEYS},
+}
 
 _PG_DDL = [
     "DROP VIEW IF EXISTS active_users",
@@ -125,4 +138,4 @@ def live_shop(request):
         dialect, dsn, schema_name=schema_name or "public"
     )
     schema = connector.get_schema()
-    return dialect, schema, _RDBMS_CAPABILITIES
+    return dialect, schema, _CAPABILITIES_BY_DIALECT[dialect]

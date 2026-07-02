@@ -165,10 +165,14 @@ The conceptual model + OWL stay as **optional** outputs for the other consumers.
       comment + view flag, unique constraints (`SHOW UNIQUE KEYS`), FK cardinality hint,
       provenance + server version (`CURRENT_VERSION()`). Validated **always-on** via
       `fakesnow` (embedded emulator) + the mock-cursor unit tests.
-- [ ] **Next increment — per-dialect catalog introspection for Postgres / MySQL / SQL
-      Server** (unique/check/index/comment/default/view + server version). The live Docker
-      conformance harness is already in place (see Testing strategy); it currently asserts
-      core + FKs for these and widens as each dialect is enriched.
+- [x] **Postgres** catalog introspection enriched: column default/ordinal/comment
+      (`pg_description`), table comment + view flag (`pg_class`/`obj_description`), unique
+      constraints, CHECK constraints (`pg_get_constraintdef`), FK cardinality hint, provenance
+      + server version. Assembly validated via a scripted fake-cursor unit test; live SQL by
+      the Docker workflow (Postgres capabilities widened to the full set there).
+- [ ] **Next increment — MySQL + SQL Server** catalog introspection (same fields, using the
+      DuckDB/Postgres `information_schema` pattern). The Docker harness asserts core + FKs for
+      these until enriched, then widens.
 
 ---
 
