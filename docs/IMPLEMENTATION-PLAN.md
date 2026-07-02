@@ -170,9 +170,15 @@ The conceptual model + OWL stay as **optional** outputs for the other consumers.
       constraints, CHECK constraints (`pg_get_constraintdef`), FK cardinality hint, provenance
       + server version. Assembly validated via a scripted fake-cursor unit test; live SQL by
       the Docker workflow (Postgres capabilities widened to the full set there).
-- [ ] **Next increment — MySQL + SQL Server** catalog introspection (same fields, using the
-      DuckDB/Postgres `information_schema` pattern). The Docker harness asserts core + FKs for
-      these until enriched, then widens.
+- [x] **MySQL** catalog introspection enriched: default/ordinal + inline `COLUMN_COMMENT` /
+      `TABLE_COMMENT`, view flag, unique constraints, CHECK constraints (8.0.16+, best-effort),
+      FK cardinality hint, provenance (`VERSION()`). Assembly validated by a scripted
+      fake-cursor test; Docker harness widened to the full set.
+- [x] **SQL Server** catalog introspection enriched: default/ordinal, view flag, unique
+      constraints, CHECK constraints (`sys.check_constraints`), comments
+      (`sys.extended_properties`, best-effort), FK cardinality hint, provenance
+      (`SERVERPROPERTY('ProductVersion')`). Assembly validated by a scripted fake-cursor test;
+      Docker harness widened (comments asserted in the mock, not the plain-DDL live path).
 
 ---
 

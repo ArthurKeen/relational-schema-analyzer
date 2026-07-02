@@ -58,7 +58,7 @@ from typing import Any, Iterator, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..log import get_logger
-from ..types import Column, ForeignKey, Schema, Table
+from ..types import CheckConstraint, Column, ForeignKey, Schema, SourceProvenance, Table
 
 logger = get_logger(__name__)
 
@@ -176,33 +176,60 @@ class SQLServerConnector:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _provenance(self, conn: Any) -> SourceProvenance:
+        version: Optional[str] = None
+        database: Optional[str] = None
+        cur = conn.cursor(as_dict=True)
+        try:
+            cur.execute(
+                "SELECT CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR(64)) AS ver, "
+                "DB_NAME() AS db"
+            )
+            row = cur.fetchone()
+            if row:
+                version = row.get("ver")
+                database = row.get("db")
+        except Exception:  # noqa: BLE001 - provenance is best-effort
+            pass
+        finally:
+            cur.close()
+        return SourceProvenance(
+            dialect="sqlserver",
+            server_version=(str(version) if version else None),
+            database=database,
+            namespace=self.schema_name,
+        )
+
     def _introspect(self, conn: Any) -> Schema:
-        schema = Schema()
+        schema = Schema(source=self._provenance(conn))
         cur = conn.cursor(as_dict=True)
         try:
             cur.execute(
                 """
-                SELECT TABLE_NAME
+                SELECT TABLE_NAME, TABLE_TYPE
                 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
                 ORDER BY TABLE_NAME
                 """,
                 (self.schema_name,),
             )
-            table_names = [row["TABLE_NAME"] for row in cur.fetchall()]
+            table_rows = cur.fetchall()
         finally:
             cur.close()
 
-        for table_name in table_names:
-            schema.tables[table_name] = self._process_table(conn, table_name)
+        for row in table_rows:
+            name = row["TABLE_NAME"]
+            schema.tables[name] = self._process_table(
+                conn, name, is_view=(row.get("TABLE_TYPE") == "VIEW")
+            )
         return schema
 
-    def _process_table(self, conn: Any, table_name: str) -> Table:
+    def _process_table(self, conn: Any, table_name: str, *, is_view: bool = False) -> Table:
         cur = conn.cursor(as_dict=True)
         try:
             cur.execute(
                 """
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
                 ORDER BY ORDINAL_POSITION
@@ -225,6 +252,11 @@ class SQLServerConnector:
                 (self.schema_name, table_name),
             )
             pks = [row["COLUMN_NAME"] for row in cur.fetchall()]
+
+            unique_sets = self._fetch_unique_constraints(cur, table_name)
+            checks = self._fetch_check_constraints(cur, table_name)
+            col_comments = self._fetch_column_comments(cur, table_name)
+            table_comment = self._fetch_table_comment(cur, table_name)
 
             # sys.* catalog views give referenced table/column + composite
             # ordering directly (INFORMATION_SCHEMA does not expose the
@@ -253,15 +285,25 @@ class SQLServerConnector:
         finally:
             cur.close()
 
+        single_unique = {u[0] for u in unique_sets if len(u) == 1}
+        if len(pks) == 1:
+            single_unique.add(pks[0])
+
         columns = []
         for c in columns_data:
             raw_type = (c["DATA_TYPE"] or "").lower()
+            name = c["COLUMN_NAME"]
+            ordinal = c.get("ORDINAL_POSITION")
             columns.append(
                 Column(
-                    name=c["COLUMN_NAME"],
+                    name=name,
                     data_type=_MSSQL_TYPE_OVERRIDES.get(raw_type, raw_type),
                     is_nullable=(c["IS_NULLABLE"] == "YES"),
-                    is_primary_key=(c["COLUMN_NAME"] in pks),
+                    is_primary_key=(name in pks),
+                    is_unique=(name in single_unique),
+                    default=(str(c["COLUMN_DEFAULT"]) if c.get("COLUMN_DEFAULT") is not None else None),
+                    comment=col_comments.get(name),
+                    ordinal=(int(ordinal) - 1 if ordinal is not None else None),
                 )
             )
 
@@ -282,12 +324,104 @@ class SQLServerConnector:
 
         fks = [ForeignKey(**v) for v in grouped.values()]
 
+        unique_col_sets = [set(u) for u in unique_sets]
+        if pks:
+            unique_col_sets.append(set(pks))
+        for fk in fks:
+            fk.is_unique = set(fk.columns) in unique_col_sets
+
         return Table(
             name=table_name,
             columns=columns,
             primary_key=pks,
             foreign_keys=fks,
+            is_view=is_view,
+            comment=table_comment,
+            schema_name=self.schema_name,
+            unique_constraints=[list(u) for u in unique_sets],
+            check_constraints=checks,
         )
+
+    def _fetch_unique_constraints(self, cur: Any, table_name: str) -> list[list[str]]:
+        cur.execute(
+            """
+            SELECT tc.CONSTRAINT_NAME, kcu.COLUMN_NAME, kcu.ORDINAL_POSITION
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+              ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+             AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+            WHERE tc.CONSTRAINT_TYPE = 'UNIQUE'
+              AND tc.TABLE_SCHEMA = %s AND tc.TABLE_NAME = %s
+            ORDER BY tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+            """,
+            (self.schema_name, table_name),
+        )
+        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        for row in cur.fetchall():
+            grouped.setdefault(row["CONSTRAINT_NAME"], []).append(row["COLUMN_NAME"])
+        return list(grouped.values())
+
+    def _fetch_check_constraints(self, cur: Any, table_name: str) -> list[CheckConstraint]:
+        try:
+            cur.execute(
+                """
+                SELECT cc.name AS name, cc.definition AS definition, col.name AS column_name
+                FROM sys.check_constraints cc
+                JOIN sys.tables t ON t.object_id = cc.parent_object_id
+                JOIN sys.schemas s ON s.schema_id = t.schema_id
+                LEFT JOIN sys.columns col ON col.object_id = cc.parent_object_id
+                                         AND col.column_id = cc.parent_column_id
+                WHERE s.name = %s AND t.name = %s
+                """,
+                (self.schema_name, table_name),
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            return []
+        out: list[CheckConstraint] = []
+        for r in cur.fetchall():
+            cols = [r["column_name"]] if r.get("column_name") else []
+            out.append(
+                CheckConstraint(
+                    name=r.get("name"), expression=(r.get("definition") or ""), columns=cols
+                )
+            )
+        return out
+
+    def _fetch_table_comment(self, cur: Any, table_name: str) -> Optional[str]:
+        try:
+            cur.execute(
+                """
+                SELECT CAST(ep.value AS NVARCHAR(MAX)) AS comment
+                FROM sys.extended_properties ep
+                JOIN sys.tables t ON t.object_id = ep.major_id
+                JOIN sys.schemas s ON s.schema_id = t.schema_id
+                WHERE ep.class = 1 AND ep.minor_id = 0 AND ep.name = 'MS_Description'
+                  AND s.name = %s AND t.name = %s
+                """,
+                (self.schema_name, table_name),
+            )
+            row = cur.fetchone()
+        except Exception:  # noqa: BLE001 - best-effort
+            return None
+        return row.get("comment") if row else None
+
+    def _fetch_column_comments(self, cur: Any, table_name: str) -> dict[str, str]:
+        try:
+            cur.execute(
+                """
+                SELECT c.name AS column_name, CAST(ep.value AS NVARCHAR(MAX)) AS comment
+                FROM sys.extended_properties ep
+                JOIN sys.columns c ON c.object_id = ep.major_id AND c.column_id = ep.minor_id
+                JOIN sys.tables t ON t.object_id = ep.major_id
+                JOIN sys.schemas s ON s.schema_id = t.schema_id
+                WHERE ep.class = 1 AND ep.minor_id > 0 AND ep.name = 'MS_Description'
+                  AND s.name = %s AND t.name = %s
+                """,
+                (self.schema_name, table_name),
+            )
+        except Exception:  # noqa: BLE001 - best-effort
+            return {}
+        return {r["column_name"]: r["comment"] for r in cur.fetchall() if r.get("comment")}
 
 
 class SQLServerSession:

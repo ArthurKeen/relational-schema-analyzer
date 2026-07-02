@@ -40,8 +40,10 @@ _FULL_CAPABILITIES = {
 }
 _CAPABILITIES_BY_DIALECT = {
     "postgresql": _FULL_CAPABILITIES,
-    "mysql": {conf.FOREIGN_KEYS},
-    "sqlserver": {conf.FOREIGN_KEYS},
+    "mysql": _FULL_CAPABILITIES,
+    # SQL Server comments live in extended properties, which the plain DDL doesn't
+    # set, so COMMENTS is asserted only in the mock test (with comment data present).
+    "sqlserver": _FULL_CAPABILITIES - {conf.COMMENTS},
 }
 
 _PG_DDL = [
@@ -61,7 +63,8 @@ _MYSQL_DDL = [
     "DROP VIEW IF EXISTS active_users",
     "DROP TABLE IF EXISTS orders",
     "DROP TABLE IF EXISTS users",
-    "CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE,"
+    "CREATE TABLE users (id INT PRIMARY KEY,"
+    " email VARCHAR(100) NOT NULL UNIQUE COMMENT 'contact email',"
     " status VARCHAR(10) DEFAULT 'active', created_at DATETIME) COMMENT='people'",
     "CREATE TABLE orders (id INT PRIMARY KEY, user_id INT NOT NULL,"
     " total DECIMAL(10,2), FOREIGN KEY (user_id) REFERENCES users(id))",

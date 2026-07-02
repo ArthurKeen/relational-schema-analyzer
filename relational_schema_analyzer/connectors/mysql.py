@@ -54,7 +54,7 @@ from typing import Any, Iterator, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ..log import get_logger
-from ..types import Column, ForeignKey, Schema, Table
+from ..types import CheckConstraint, Column, ForeignKey, Schema, SourceProvenance, Table
 
 logger = get_logger(__name__)
 
@@ -181,29 +181,55 @@ class MySQLConnector:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _provenance(self, conn: Any) -> SourceProvenance:
+        version: Optional[str] = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT VERSION() AS v")
+                row = cur.fetchone()
+                if row:
+                    version = row.get("v") if isinstance(row, dict) else row[0]
+        except Exception:  # noqa: BLE001 - provenance is best-effort
+            version = None
+        return SourceProvenance(
+            dialect="mysql",
+            server_version=(str(version) if version else None),
+            database=self.schema_name,
+            namespace=self.schema_name,
+        )
+
     def _introspect(self, conn: Any) -> Schema:
-        schema = Schema()
+        schema = Schema(source=self._provenance(conn))
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT TABLE_NAME
+                SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT
                 FROM information_schema.TABLES
-                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+                WHERE TABLE_SCHEMA = %s AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
                 ORDER BY TABLE_NAME
                 """,
                 (self.schema_name,),
             )
-            table_names = [row["TABLE_NAME"] for row in cur.fetchall()]
+            table_rows = cur.fetchall()
 
-        for table_name in table_names:
-            schema.tables[table_name] = self._process_table(conn, table_name)
+        for row in table_rows:
+            name = row["TABLE_NAME"]
+            schema.tables[name] = self._process_table(
+                conn,
+                name,
+                is_view=(row.get("TABLE_TYPE") == "VIEW"),
+                comment=row.get("TABLE_COMMENT"),
+            )
         return schema
 
-    def _process_table(self, conn: Any, table_name: str) -> Table:
+    def _process_table(
+        self, conn: Any, table_name: str, *, is_view: bool = False, comment: Any = None
+    ) -> Table:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE,
+                       COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_COMMENT
                 FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
                 ORDER BY ORDINAL_POSITION
@@ -224,6 +250,8 @@ class MySQLConnector:
             )
             pks = [row["COLUMN_NAME"] for row in cur.fetchall()]
 
+            unique_sets = self._fetch_unique_constraints(cur, table_name)
+
             cur.execute(
                 """
                 SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME,
@@ -237,12 +265,22 @@ class MySQLConnector:
             )
             fk_rows = cur.fetchall()
 
+            checks = self._fetch_check_constraints(cur, table_name)
+
+        single_unique = {u[0] for u in unique_sets if len(u) == 1}
+        if len(pks) == 1:
+            single_unique.add(pks[0])
+
         columns = [
             Column(
                 name=c["COLUMN_NAME"],
                 data_type=(c["DATA_TYPE"] or "").lower(),
                 is_nullable=(c["IS_NULLABLE"] == "YES"),
                 is_primary_key=(c["COLUMN_NAME"] in pks),
+                is_unique=(c["COLUMN_NAME"] in single_unique),
+                default=(str(c["COLUMN_DEFAULT"]) if c.get("COLUMN_DEFAULT") is not None else None),
+                comment=(c.get("COLUMN_COMMENT") or None),
+                ordinal=(int(c["ORDINAL_POSITION"]) - 1 if c.get("ORDINAL_POSITION") else None),
             )
             for c in columns_data
         ]
@@ -264,12 +302,65 @@ class MySQLConnector:
 
         fks = [ForeignKey(**v) for v in grouped.values()]
 
+        unique_col_sets = [set(u) for u in unique_sets]
+        if pks:
+            unique_col_sets.append(set(pks))
+        for fk in fks:
+            fk.is_unique = set(fk.columns) in unique_col_sets
+
         return Table(
             name=table_name,
             columns=columns,
             primary_key=pks,
             foreign_keys=fks,
+            is_view=is_view,
+            comment=(str(comment) if comment else None),
+            schema_name=self.schema_name,
+            unique_constraints=[list(u) for u in unique_sets],
+            check_constraints=checks,
         )
+
+    def _fetch_unique_constraints(self, cur: Any, table_name: str) -> list[list[str]]:
+        cur.execute(
+            """
+            SELECT tc.CONSTRAINT_NAME, kcu.COLUMN_NAME, kcu.ORDINAL_POSITION
+            FROM information_schema.TABLE_CONSTRAINTS tc
+            JOIN information_schema.KEY_COLUMN_USAGE kcu
+              ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+              AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+              AND tc.TABLE_NAME = kcu.TABLE_NAME
+            WHERE tc.CONSTRAINT_TYPE = 'UNIQUE'
+              AND tc.TABLE_SCHEMA = %s AND tc.TABLE_NAME = %s
+            ORDER BY tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+            """,
+            (self.schema_name, table_name),
+        )
+        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        for row in cur.fetchall():
+            grouped.setdefault(row["CONSTRAINT_NAME"], []).append(row["COLUMN_NAME"])
+        return list(grouped.values())
+
+    def _fetch_check_constraints(self, cur: Any, table_name: str) -> list[CheckConstraint]:
+        """CHECK constraints (MySQL 8.0.16+ / MariaDB 10.2+). Best-effort."""
+        try:
+            cur.execute(
+                """
+                SELECT tc.CONSTRAINT_NAME AS name, cc.CHECK_CLAUSE AS definition
+                FROM information_schema.TABLE_CONSTRAINTS tc
+                JOIN information_schema.CHECK_CONSTRAINTS cc
+                  ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+                  AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+                WHERE tc.CONSTRAINT_TYPE = 'CHECK'
+                  AND tc.TABLE_SCHEMA = %s AND tc.TABLE_NAME = %s
+                """,
+                (self.schema_name, table_name),
+            )
+        except Exception:  # noqa: BLE001 - older servers lack CHECK_CONSTRAINTS
+            return []
+        return [
+            CheckConstraint(name=r.get("name"), expression=(r.get("definition") or ""))
+            for r in cur.fetchall()
+        ]
 
 
 class MySQLSession:

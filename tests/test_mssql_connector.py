@@ -203,3 +203,109 @@ class TestSession:
         _install_fake_pymssql(monkeypatch, lambda **kw: _FakeConnection(_sample_db()))
         session = SQLServerConnector("mssql://u:p@h/shop", schema_name="sales").open_session()
         assert session._qualified("users") == "[sales].[users]"
+
+
+# ── Enrichment conformance (scripted fake cursor, full capability set) ────
+
+from tests import _conformance as conf  # noqa: E402
+
+
+def _scol(name, dtype, nullable, default, ordinal):
+    return {
+        "COLUMN_NAME": name, "DATA_TYPE": dtype, "IS_NULLABLE": nullable,
+        "COLUMN_DEFAULT": default, "ORDINAL_POSITION": ordinal,
+    }
+
+
+def _mssql_resolve(sql: str, params: tuple):
+    s = " ".join(sql.upper().split())
+    table = params[1] if len(params) >= 2 else None
+    if "SERVERPROPERTY" in s:
+        return [{"ver": "16.0.1000", "db": "shop"}]
+    if "INFORMATION_SCHEMA.TABLES" in s:
+        return [
+            {"TABLE_NAME": "users", "TABLE_TYPE": "BASE TABLE"},
+            {"TABLE_NAME": "orders", "TABLE_TYPE": "BASE TABLE"},
+            {"TABLE_NAME": "active_users", "TABLE_TYPE": "VIEW"},
+        ]
+    if "INFORMATION_SCHEMA.COLUMNS" in s:
+        return {
+            "users": [
+                _scol("id", "int", "NO", None, 1),
+                _scol("email", "varchar", "NO", None, 2),
+                _scol("status", "varchar", "YES", "('active')", 3),
+                _scol("created_at", "datetime2", "YES", None, 4),
+            ],
+            "orders": [
+                _scol("id", "int", "NO", None, 1),
+                _scol("user_id", "int", "NO", None, 2),
+                _scol("total", "decimal", "YES", None, 3),
+            ],
+            "active_users": [_scol("id", "int", "YES", None, 1)],
+        }.get(table, [])
+    if "'PRIMARY KEY'" in s:
+        return [{"COLUMN_NAME": "id"}] if table in ("users", "orders") else []
+    if "'UNIQUE'" in s:
+        if table == "users":
+            return [{"CONSTRAINT_NAME": "email_uq", "COLUMN_NAME": "email",
+                     "ORDINAL_POSITION": 1}]
+        return []
+    if "SYS.CHECK_CONSTRAINTS" in s:
+        return []
+    if "MINOR_ID = 0" in s:
+        return [{"comment": "people"}] if table == "users" else []
+    if "MINOR_ID > 0" in s:
+        return ([{"column_name": "email", "comment": "contact email"}]
+                if table == "users" else [])
+    if "SYS.FOREIGN_KEYS" in s:
+        if table == "orders":
+            return [{"constraint_name": "fk_orders_user", "column_name": "user_id",
+                     "foreign_table_name": "users", "foreign_column_name": "id"}]
+        return []
+    return []
+
+
+class _EnrichedCursor:
+    def __init__(self):
+        self._rows: list = []
+
+    def execute(self, sql, params=None):
+        self._rows = _mssql_resolve(sql, params or ())
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def close(self):
+        pass
+
+
+class _EnrichedConn:
+    def cursor(self, as_dict: bool = False):
+        return _EnrichedCursor()
+
+    def close(self):
+        pass
+
+
+class TestEnrichmentConformance:
+    def test_full_conformance(self, monkeypatch):
+        _install_fake_pymssql(monkeypatch, lambda **kw: _EnrichedConn())
+        schema = SQLServerConnector("mssql://u:p@h/shop").get_schema()
+        caps = {
+            conf.ORDINAL, conf.DEFAULTS, conf.COMMENTS, conf.UNIQUE,
+            conf.FOREIGN_KEYS, conf.VIEWS, conf.PROVENANCE_VERSION,
+        }
+        conf.assert_shop_conformance(schema, dialect="sqlserver", capabilities=caps)
+
+    def test_details(self, monkeypatch):
+        _install_fake_pymssql(monkeypatch, lambda **kw: _EnrichedConn())
+        schema = SQLServerConnector("mssql://u:p@h/shop").get_schema()
+        assert schema.source.server_version == "16.0.1000"
+        users = conf._find_table(schema, "users")
+        assert conf._find_col(users, "email").is_unique is True
+        assert conf._find_col(users, "email").comment == "contact email"
+        assert users.comment == "people"
+        assert conf._find_table(schema, "active_users").is_view is True

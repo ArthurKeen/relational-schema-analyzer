@@ -238,3 +238,109 @@ class TestSession:
         _install_fake_pymysql(monkeypatch, lambda **kw: _FakeConnection(_sample_db()))
         session = MySQLConnector("mysql://u:p@h/shop").open_session()
         assert session._qualified("users") == "`shop`.`users`"
+
+
+# ── Enrichment conformance (scripted fake cursor, full capability set) ────
+
+from tests import _conformance as conf  # noqa: E402
+
+
+def _mysql_resolve(sql: str, params: tuple):
+    s = " ".join(sql.upper().split())
+    table = params[1] if len(params) >= 2 else None
+    if "VERSION()" in s:
+        return [{"v": "8.0.36"}]
+    if "INFORMATION_SCHEMA.TABLES" in s:
+        return [
+            {"TABLE_NAME": "users", "TABLE_TYPE": "BASE TABLE", "TABLE_COMMENT": "people"},
+            {"TABLE_NAME": "orders", "TABLE_TYPE": "BASE TABLE", "TABLE_COMMENT": ""},
+            {"TABLE_NAME": "active_users", "TABLE_TYPE": "VIEW", "TABLE_COMMENT": ""},
+        ]
+    if "INFORMATION_SCHEMA.COLUMNS" in s:
+        return {
+            "users": [
+                _mcol("id", "int", "NO", None, 1, ""),
+                _mcol("email", "varchar", "NO", None, 2, "contact email"),
+                _mcol("status", "varchar", "YES", "active", 3, ""),
+                _mcol("created_at", "datetime", "YES", None, 4, ""),
+            ],
+            "orders": [
+                _mcol("id", "int", "NO", None, 1, ""),
+                _mcol("user_id", "int", "NO", None, 2, ""),
+                _mcol("total", "decimal", "YES", None, 3, ""),
+            ],
+            "active_users": [_mcol("id", "int", "YES", None, 1, "")],
+        }.get(table, [])
+    if "CONSTRAINT_NAME = 'PRIMARY'" in s:
+        return [{"COLUMN_NAME": "id"}] if table in ("users", "orders") else []
+    if "CONSTRAINT_TYPE = 'UNIQUE'" in s:
+        if table == "users":
+            return [{"CONSTRAINT_NAME": "email_uq", "COLUMN_NAME": "email",
+                     "ORDINAL_POSITION": 1}]
+        return []
+    if "REFERENCED_TABLE_NAME IS NOT NULL" in s:
+        if table == "orders":
+            return [{"COLUMN_NAME": "user_id", "REFERENCED_TABLE_NAME": "users",
+                     "REFERENCED_COLUMN_NAME": "id", "CONSTRAINT_NAME": "fk_orders_user"}]
+        return []
+    if "CHECK_CONSTRAINTS" in s:
+        return []
+    return []
+
+
+def _mcol(name, dtype, nullable, default, ordinal, comment):
+    return {
+        "COLUMN_NAME": name, "DATA_TYPE": dtype, "IS_NULLABLE": nullable,
+        "COLUMN_DEFAULT": default, "ORDINAL_POSITION": ordinal, "COLUMN_COMMENT": comment,
+    }
+
+
+class _EnrichedCursor:
+    def __init__(self):
+        self._rows: list = []
+
+    def execute(self, sql, params=None):
+        self._rows = _mysql_resolve(sql, params or ())
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def close(self):
+        pass
+
+
+class _EnrichedConn:
+    def cursor(self, cursorclass=None):
+        return _EnrichedCursor()
+
+    def close(self):
+        pass
+
+
+class TestEnrichmentConformance:
+    def test_full_conformance(self, monkeypatch):
+        _install_fake_pymysql(monkeypatch, lambda **kw: _EnrichedConn())
+        schema = MySQLConnector("mysql://u:p@h/shop").get_schema()
+        caps = {
+            conf.ORDINAL, conf.DEFAULTS, conf.COMMENTS, conf.UNIQUE,
+            conf.FOREIGN_KEYS, conf.VIEWS, conf.PROVENANCE_VERSION,
+        }
+        conf.assert_shop_conformance(schema, dialect="mysql", capabilities=caps)
+
+    def test_details(self, monkeypatch):
+        _install_fake_pymysql(monkeypatch, lambda **kw: _EnrichedConn())
+        schema = MySQLConnector("mysql://u:p@h/shop").get_schema()
+        assert schema.source.server_version == "8.0.36"
+        users = conf._find_table(schema, "users")
+        assert conf._find_col(users, "status").default == "active"
+        assert conf._find_col(users, "email").is_unique is True
+        assert conf._find_table(schema, "active_users").is_view is True
