@@ -223,7 +223,12 @@ available backend with capability gating):
       (Pagila / Chinook / Northwind via `docker compose` + the r2g `docker/*.sql`), introspect
       with the live connectors, and assert golden conceptual bundles — the live-DB counterpart
       to the offline CSV golden corpus added in Phase 2.
-- [ ] `mcp_server.py` + `relational-schema-analyzer-mcp` entry point
+- [x] `tool.py` — `run_tool(request) -> response`: the v1 tool-contract entrypoint
+      (snapshot / analyze / owl), live source or captured `input.physical`; fully testable
+      without the `mcp` package.
+- [x] `mcp_server.py` + `relational-schema-analyzer-mcp` entry point — FastMCP wrapper
+      (stdio + sse/streamable-http, bearer-token gate `RSA_MCP_TOKEN`), generic
+      `..._run`/`..._run_json` + typed `snapshot`/`analyze`/`owl` tools.
 - [ ] **r2g integration PR**: add dependency, replace embedded modules with imports/shims,
       delete duplicated code, wire conceptual schema into `MappingConfig` generation
       (this realizes r2g's planned Phase 10 ontology derivation via the shared lib)

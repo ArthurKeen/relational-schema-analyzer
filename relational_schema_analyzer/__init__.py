@@ -36,6 +36,7 @@ from .mapping import PhysicalMapping
 from .metadata import fingerprint_physical_schema
 from .owl_export import export_owl_jsonld, export_owl_turtle
 from .schema_diff import diff_schemas
+from .tool import run_tool
 from .topo_sort import topological_sort_tables
 from .types import (
     CheckConstraint,
@@ -79,4 +80,6 @@ __all__ = [
     "export_bundle",
     "export_owl_turtle",
     "export_owl_jsonld",
+    # Phase 5 — tool contract / MCP
+    "run_tool",
 ]

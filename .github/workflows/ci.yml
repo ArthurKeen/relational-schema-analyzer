@@ -30,7 +30,7 @@ jobs:
           # mysql/mssql drivers are intentionally NOT installed so their
           # "missing driver" paths are tested. Live-DB tests are opt-in (see
           # integration.yml) and skip here because RUN_INTEGRATION is unset.
-          python -m pip install -e ".[dev,postgres,csv,owl]"
+          python -m pip install -e ".[dev,postgres,csv,owl,duckdb,mcp]"
 
       - name: Ruff
         run: ruff check .

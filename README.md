@@ -53,6 +53,16 @@ relational-schema-analyzer analyze  --from-snapshot physical.json --pretty
 relational-schema-analyzer owl      --from-snapshot physical.json --format turtle -o schema.ttl
 ```
 
+Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`.
+
+**MCP server** (optional, `pip install 'relational-schema-analyzer[mcp]'`) exposes the same
+`snapshot` / `analyze` / `owl` operations over the v1 tool contract:
+
+```bash
+relational-schema-analyzer-mcp                                   # stdio (local IDE)
+relational-schema-analyzer-mcp --transport sse --host 0.0.0.0 --port 8000   # remote (set RSA_MCP_TOKEN)
+```
+
 ## Why this exists
 
 Most of the relational **introspection** layer already exists and is battle-tested inside
