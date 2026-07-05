@@ -60,6 +60,14 @@ relational-schema-analyzer owl      --from-snapshot physical.json --format turtl
 
 Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`.
 
+**Consumer metadata passthrough (0.2.0).** `Column` and `Table` carry an optional
+`extra: dict` that the analyzer never reads or interprets — it only guarantees the
+data survives serialization round-trips. This lets a consumer (e.g. `r2g`'s Phase-9
+governance `classification`) adopt these types without losing its own per-column /
+per-table metadata. `extra` is omitted from serialization when empty, so schema
+dumps and `physicalSchemaFingerprint` values are byte-identical for schemas that
+don't use it.
+
 **MCP server** (optional, `pip install 'relational-schema-analyzer[mcp]'`) exposes the same
 `snapshot` / `analyze` / `owl` operations over the v1 tool contract:
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, computed_field, model_serializer, model_validator
+from pydantic import BaseModel, Field, computed_field, model_serializer, model_validator
 
 from .typemap import normalized_type_category
 
@@ -84,12 +84,26 @@ class Column(BaseModel):
     default: Optional[str] = None
     comment: Optional[str] = None
     ordinal: Optional[int] = None
+    # Paradigm-neutral passthrough for consumer-owned metadata (e.g. r2g's Phase-9
+    # governance classification). The analyzer never reads or interprets it; it
+    # only guarantees round-trip survival so a consumer can adopt these types
+    # without losing its own per-column data. Omitted from serialization when
+    # empty (like ``is_unique``) so existing dumps and schema fingerprints are
+    # byte-identical for schemas that don't use it.
+    extra: Dict[str, Any] = Field(default_factory=dict)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def type_category(self) -> str:
         """Normalized type category derived from ``data_type`` (see typemap)."""
         return normalized_type_category(self.data_type)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if not data.get("extra"):
+            data.pop("extra", None)
+        return data
 
 
 class CheckConstraint(BaseModel):
@@ -127,6 +141,17 @@ class Table(BaseModel):
     unique_constraints: List[List[str]] = []
     check_constraints: List[CheckConstraint] = []
     indexes: List[Index] = []
+    # Paradigm-neutral passthrough for consumer-owned metadata (see ``Column.extra``).
+    # Omitted from serialization when empty so existing dumps / fingerprints are
+    # unchanged for schemas that don't use it.
+    extra: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if not data.get("extra"):
+            data.pop("extra", None)
+        return data
 
 
 class SourceProvenance(BaseModel):

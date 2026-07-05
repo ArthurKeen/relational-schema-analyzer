@@ -44,6 +44,74 @@ class TestTypeCategory:
         assert dumped["type_category"] == "integer"
 
 
+class TestExtraPassthrough:
+    """The consumer-owned ``extra`` metadata passthrough (Column + Table)."""
+
+    def test_column_extra_defaults_empty_and_omitted(self):
+        col = Column(name="c", data_type="text")
+        assert col.extra == {}
+        assert "extra" not in col.model_dump()
+        assert "extra" not in col.model_dump(mode="json")
+
+    def test_table_extra_defaults_empty_and_omitted(self):
+        tbl = Table(name="t", columns=[])
+        assert tbl.extra == {}
+        assert "extra" not in tbl.model_dump()
+
+    def test_column_extra_round_trips(self):
+        col = Column(
+            name="email",
+            data_type="text",
+            extra={"classification": {"tags": ["PII.Sensitive"], "tier": "Tier.Tier1"}},
+        )
+        dumped = col.model_dump()
+        assert dumped["extra"]["classification"]["tags"] == ["PII.Sensitive"]
+        # type_category is still serialized alongside extra.
+        assert dumped["type_category"] == "string"
+        restored = Column.model_validate(dumped)
+        assert restored.extra["classification"]["tier"] == "Tier.Tier1"
+
+    def test_table_extra_round_trips_via_schema_file(self, tmp_path):
+        schema = PhysicalSchema(
+            tables={
+                "users": Table(
+                    name="users",
+                    columns=[
+                        Column(name="id", data_type="integer", is_primary_key=True),
+                        Column(name="ssn", data_type="text", extra={"pii": True}),
+                    ],
+                    primary_key=["id"],
+                    extra={"owner": "identity-team"},
+                )
+            }
+        )
+        path = str(tmp_path / "schema.json")
+        schema.save_to_file(path)
+        loaded = PhysicalSchema.load_from_file(path)
+        assert loaded.tables["users"].extra == {"owner": "identity-team"}
+        ssn = next(c for c in loaded.tables["users"].columns if c.name == "ssn")
+        assert ssn.extra == {"pii": True}
+
+    def test_empty_extra_does_not_change_fingerprint(self):
+        # Backward compatibility: a schema that doesn't use `extra` fingerprints
+        # identically to how it did before the field existed.
+        from relational_schema_analyzer.metadata import fingerprint_physical_schema
+
+        schema = PhysicalSchema(
+            tables={
+                "users": Table(
+                    name="users",
+                    columns=[Column(name="id", data_type="integer", is_primary_key=True)],
+                    primary_key=["id"],
+                )
+            }
+        )
+        dumped = schema.model_dump_json()
+        assert '"extra"' not in dumped
+        # Deterministic + stable.
+        assert fingerprint_physical_schema(schema) == fingerprint_physical_schema(schema)
+
+
 class TestForeignKeyUniqueHint:
     def test_is_unique_round_trips(self):
         fk = ForeignKey(column="user_id", foreign_table="users", foreign_column="id",
