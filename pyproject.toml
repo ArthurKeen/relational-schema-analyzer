@@ -12,11 +12,17 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Arthur Keen" }]
 keywords = ["relational", "schema", "ontology", "owl", "conceptual-model", "postgres", "mysql", "snowflake"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
 ]
 dependencies = [
     "pydantic>=2",
@@ -43,7 +49,9 @@ relational-schema-analyzer = "relational_schema_analyzer.cli:main"
 relational-schema-analyzer-mcp = "relational_schema_analyzer.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/arangodb/relational-schema-analyzer"
+Homepage = "https://github.com/ArthurKeen/relational-schema-analyzer"
+Repository = "https://github.com/ArthurKeen/relational-schema-analyzer"
+Issues = "https://github.com/ArthurKeen/relational-schema-analyzer/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["relational_schema_analyzer"]
