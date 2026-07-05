@@ -209,11 +209,20 @@ available backend with capability gating):
 
 ## Phase 4 — LLM refinement (optional, additive)
 
-- [ ] `providers/` interface (openai / anthropic / openrouter) — copy pattern from
-      `arango-schema-mapper/schema_analyzer/providers/`
-- [ ] `workflow.py` — generate / validate / repair loop refining the baseline conceptual model
-- [ ] embed-vs-link hints, n-ary recognition, semantic naming, denormalization detection
-- [ ] eval harness (`eval/`) comparing baseline vs LLM-refined against golden corpora
+- [x] `providers/` interface (openai / anthropic / openrouter) + registry
+      (`register_provider` / `list_providers` / `create_provider`), copied from the Arango
+      analyzer's pattern; SDKs imported lazily behind extras.
+- [x] `refine.py` — generate / validate / repair loop that **refines** (not regenerates) the
+      baseline: semantic renames + embed-vs-link / n-ary / description hints, applied only to
+      existing elements on safe copies (no invent/drop; rename-collision validation).
+- [x] `RelationalSchemaAnalyzer(llm_provider=...)` wired: provider name or object; **graceful
+      fallback** to baseline on any provider/validation error; `metadata.llm` records outcome.
+- [x] Refinement provenance: touched elements flip `source` to `llm`; hints are contract-valid
+      additive keys. Tested with a fake provider (apply, repair-on-collision, JSON-failure,
+      end-to-end analyzer path + fallback). 309 tests, ruff clean.
+- [ ] **Deferred** — denormalization detection (needs value sampling) and an `eval/` harness
+      comparing baseline vs LLM-refined against golden corpora (needs a live LLM + labeled
+      corpora; better with the Phase 5 Docker/live corpora).
 
 ---
 

@@ -45,6 +45,11 @@ physical = create_connector("postgresql", url, schema_name="public").get_schema(
 analysis = RelationalSchemaAnalyzer().analyze(physical)   # baseline, no LLM
 bundle = analysis.to_bundle()    # {conceptualSchema, physicalMapping, metadata}
 ttl = export_owl_turtle(analysis)
+
+# Optional LLM refinement (additive; falls back to baseline on any error):
+refined = RelationalSchemaAnalyzer(
+    llm_provider="openai",           # or "anthropic" / "openrouter" / a provider object
+).analyze(physical)                  # better names + embed/n-ary hints
 ```
 
 ```bash

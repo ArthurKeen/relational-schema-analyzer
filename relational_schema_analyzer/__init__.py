@@ -34,6 +34,7 @@ from .fk_inference import (
 from .exports import export_bundle
 from .mapping import PhysicalMapping
 from .metadata import fingerprint_physical_schema
+from .providers import list_providers, register_provider
 from .owl_export import export_owl_jsonld, export_owl_turtle
 from .schema_diff import diff_schemas
 from .tool import run_tool
@@ -82,4 +83,7 @@ __all__ = [
     "export_owl_jsonld",
     # Phase 5 — tool contract / MCP
     "run_tool",
+    # Phase 4 — optional LLM refinement
+    "register_provider",
+    "list_providers",
 ]
