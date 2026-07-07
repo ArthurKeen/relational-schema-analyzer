@@ -58,7 +58,9 @@ relational-schema-analyzer analyze  --from-snapshot physical.json --pretty
 relational-schema-analyzer owl      --from-snapshot physical.json --format turtle -o schema.ttl
 ```
 
-Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`.
+Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`,
+and `dbt` (a dbt `manifest.json` — tests/contracts → constraints + FKs; the first
+data-catalog source, see `docs/DESIGN.md` §9.3.1).
 
 **Consumer metadata passthrough (0.2.0).** `Column` and `Table` carry an optional
 `extra: dict` that the analyzer never reads or interprets — it only guarantees the

@@ -191,6 +191,7 @@ available backend with capability gating):
 | Tier | Engines | Mechanism | Where |
 | --- | --- | --- | --- |
 | Embedded (always-on) | **DuckDB** | server-less; real connector over the full capability set | `tests/test_duckdb_connector.py`, main CI |
+| Offline artifact (always-on) | **dbt** | `manifest.json` fixture; tests/contracts → constraints/FKs (full set minus DEFAULTS) | `tests/test_dbt_manifest_connector.py`, main CI |
 | Embedded (always-on) | **Snowflake** | `fakesnow` (DuckDB-backed, patches the driver in-process) | `tests/test_snowflake_fakesnow.py`, main CI |
 | Embedded (always-on) | all dialects incl. **Databricks** | recorded result-set + mock-cursor unit tests | `tests/test_*_connector.py`, main CI |
 | Offline corpus (always-on) | CSV | real CSV connector + golden bundle | `tests/test_golden_csv.py`, main CI |

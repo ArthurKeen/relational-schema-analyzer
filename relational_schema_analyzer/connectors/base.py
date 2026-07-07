@@ -85,6 +85,7 @@ SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
     "snowflake",
     "duckdb",
     "databricks",
+    "dbt",
     "csv",
 )
 
@@ -202,6 +203,10 @@ def create_connector(
         from .databricks_source import DatabricksConnector
 
         return DatabricksConnector(connection_string, schema_name=schema_name)
+    if key == "dbt":
+        from .dbt_manifest import DbtManifestConnector
+
+        return DbtManifestConnector(connection_string, schema_name=schema_name)
     if key == "csv":
         from .csv_source import CsvConnector
 

@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "dbt_version": "1.8.0",
+    "adapter_type": "postgres",
+    "project_name": "shop"
+  },
+  "nodes": {
+    "model.shop.users": {
+      "resource_type": "model",
+      "name": "users",
+      "schema": "public",
+      "database": "shop",
+      "description": "people",
+      "config": { "materialized": "table" },
+      "columns": {
+        "id": { "name": "id", "data_type": "integer", "constraints": [{ "type": "primary_key" }] },
+        "email": { "name": "email", "data_type": "varchar", "description": "contact email" },
+        "status": { "name": "status", "data_type": "varchar" },
+        "created_at": { "name": "created_at", "data_type": "timestamp" }
+      }
+    },
+    "model.shop.orders": {
+      "resource_type": "model",
+      "name": "orders",
+      "schema": "public",
+      "database": "shop",
+      "config": { "materialized": "table" },
+      "columns": {
+        "id": { "name": "id", "data_type": "integer", "constraints": [{ "type": "primary_key" }] },
+        "user_id": { "name": "user_id", "data_type": "integer" },
+        "total": { "name": "total", "data_type": "numeric" }
+      }
+    },
+    "model.shop.active_users": {
+      "resource_type": "model",
+      "name": "active_users",
+      "schema": "public",
+      "database": "shop",
+      "config": { "materialized": "view" },
+      "columns": {
+        "id": { "name": "id", "data_type": "integer" }
+      }
+    },
+    "test.shop.not_null_users_email.aaa": {
+      "resource_type": "test",
+      "column_name": "email",
+      "attached_node": "model.shop.users",
+      "test_metadata": { "name": "not_null", "kwargs": { "column_name": "email" } },
+      "depends_on": { "nodes": ["model.shop.users"] }
+    },
+    "test.shop.unique_users_email.bbb": {
+      "resource_type": "test",
+      "column_name": "email",
+      "attached_node": "model.shop.users",
+      "test_metadata": { "name": "unique", "kwargs": { "column_name": "email" } },
+      "depends_on": { "nodes": ["model.shop.users"] }
+    },
+    "test.shop.accepted_values_users_status.ccc": {
+      "resource_type": "test",
+      "column_name": "status",
+      "attached_node": "model.shop.users",
+      "test_metadata": {
+        "name": "accepted_values",
+        "kwargs": { "column_name": "status", "values": ["active", "inactive"] }
+      },
+      "depends_on": { "nodes": ["model.shop.users"] }
+    },
+    "test.shop.relationships_orders_user_id.ddd": {
+      "resource_type": "test",
+      "column_name": "user_id",
+      "attached_node": "model.shop.orders",
+      "test_metadata": {
+        "name": "relationships",
+        "kwargs": { "column_name": "user_id", "to": "ref('users')", "field": "id" }
+      },
+      "depends_on": { "nodes": ["model.shop.orders", "model.shop.users"] }
+    },
+    "test.shop.not_null_orders_user_id.eee": {
+      "resource_type": "test",
+      "column_name": "user_id",
+      "attached_node": "model.shop.orders",
+      "test_metadata": { "name": "not_null", "kwargs": { "column_name": "user_id" } },
+      "depends_on": { "nodes": ["model.shop.orders"] }
+    }
+  }
+}

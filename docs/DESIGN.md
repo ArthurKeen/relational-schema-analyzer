@@ -403,6 +403,35 @@ Kafka, DDL-file parsing, and any new dialects (Oracle/SQLite).
   assembly validated by mock-cursor tests, live is opt-in via `RSA_DATABRICKS_DSN`). Both
   landed behind the existing `SourceConnector` protocol, confirming the plugin design.
 
+### 9.3.1 Source-scope guardrail — **tabular sources in, event/message schemas out**
+
+The deciding lens for any new source: **does it yield a faithful, constraint-bearing
+`PhysicalSchema`** (tables → typed columns → PK/unique/CHECK → FKs → provenance)? That is
+what `arango-ontoextract` / `r2g` consume.
+
+**In scope — data catalogs.** Catalog / metastore sources are on-paradigm (tabular
+metadata), read-only, and provenance-rich, so they fit the model and the plugin protocol
+cleanly. Priority order by fit:
+
+1. **dbt `manifest.json`** (best fit; **implemented as the first spike**). dbt *tests* and
+   *contracts* supply exactly what the model prizes: `not_null` → non-nullable, `unique` →
+   unique constraint, `accepted_values` → CHECK-enum, and `relationships` → **foreign keys**;
+   column/table descriptions → comments. Pure JSON artifact — no live system, fully testable.
+2. **AWS Glue / Hive Metastore** — ubiquitous lakehouse catalogs (tables/columns/types/
+   partitions/comments; no constraints → lean on FK inference).
+3. **Iceberg / Delta** table metadata (schema + partition spec + identifier fields ≈ PK).
+4. Enterprise catalogs (DataHub / Atlas / OpenMetadata / Collibra) — REST, on demand.
+   (Unity Catalog is already covered via the Databricks connector.)
+
+**Out of scope — Kafka / event schemas.** "Kafka as a source" means the Schema Registry
+(Avro / Protobuf / JSON Schema), which is a poor fit: no relational constraints (PK/FK/
+unique/CHECK are absent), nested/union/map types don't map onto the scalar `Column` model
+without lossy flattening or an invasive model change, and it's a different paradigm that
+would blur the crisp "relational/tabular" scope that keeps the AOE integration clean. If
+event-schema → ontology is needed, the right shape is a **sibling analyzer** that emits the
+same tool-contract bundle — not stretching this library's model. DDL-file parsing likewise
+stays out (§1 non-goal).
+
 ### 9.4 IRI namespace — **keep the `arangodb.com` host, but make it configurable**
 
 Default conceptual IRI base stays `http://arangodb.com/schema/relational#` and physical
