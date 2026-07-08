@@ -1,0 +1,87 @@
+# OSI semantic model fixture (shaped like the canonical shop) — OSI v0.2.0.dev0.
+# Exercises: simple PK, unique_keys != PK, many-to-one relationship (FK),
+# dimension.is_time (-> temporal), typeless fields (-> string), descriptions,
+# and a "db.schema.table" source (-> schema_name + extra.osiSource).
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: shop_analytics
+    description: Shop retail semantic model
+    ai_context:
+      instructions: "Use for shop sales and customer analysis."
+
+    datasets:
+      - name: users
+        source: shop.public.users
+        primary_key: [id]
+        unique_keys:
+          - [email]
+        description: people
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+            description: surrogate key
+          - name: email
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: email
+            description: contact email
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            description: account status
+          - name: created_at
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: created_at
+            description: signup time
+            dimension:
+              is_time: true
+
+      - name: orders
+        source: shop.public.orders
+        primary_key: [id]
+        description: purchases
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: user_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: user_id
+            description: buyer
+          - name: total
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: total
+
+    relationships:
+      - name: orders_to_users
+        from: orders
+        to: users
+        from_columns: [user_id]
+        to_columns: [id]
+        ai_context:
+          synonyms:
+            - "who placed the order"
+
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.total)
+        description: Total revenue across orders

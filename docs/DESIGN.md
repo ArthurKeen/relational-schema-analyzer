@@ -417,10 +417,20 @@ cleanly. Priority order by fit:
    *contracts* supply exactly what the model prizes: `not_null` → non-nullable, `unique` →
    unique constraint, `accepted_values` → CHECK-enum, and `relationships` → **foreign keys**;
    column/table descriptions → comments. Pure JSON artifact — no live system, fully testable.
-2. **AWS Glue / Hive Metastore** — ubiquitous lakehouse catalogs (tables/columns/types/
+2. **Open Semantic Interchange `*.osi.yaml`** (**implemented as the second spike**). OSI is a
+   vendor-agnostic semantic-model spec (Snowflake, dbt Labs, Salesforce/Tableau, et al.;
+   draft `0.2.0.dev0`). Its structural constructs map cleanly: `datasets` → tables (`source`
+   `db.schema.table` → schema_name + `extra.osiSource`), `fields` → columns, `primary_key`
+   → PK, `unique_keys` → unique constraints, and `relationships` (many-to-one) → **foreign
+   keys**; descriptions → comments. **Caveat:** OSI fields carry *no SQL type* (only a
+   per-dialect `expression` + `dimension.is_time`), so types degrade to `temporal` (is_time)
+   / `string` — a consumer needing precise types should introspect the warehouse directly.
+   Model-level `metrics` are aggregate expressions, not physical columns, so they are
+   ignored. Pure YAML artifact — no live system; needs PyYAML (`[osi]` extra).
+3. **AWS Glue / Hive Metastore** — ubiquitous lakehouse catalogs (tables/columns/types/
    partitions/comments; no constraints → lean on FK inference).
-3. **Iceberg / Delta** table metadata (schema + partition spec + identifier fields ≈ PK).
-4. Enterprise catalogs (DataHub / Atlas / OpenMetadata / Collibra) — REST, on demand.
+4. **Iceberg / Delta** table metadata (schema + partition spec + identifier fields ≈ PK).
+5. Enterprise catalogs (DataHub / Atlas / OpenMetadata / Collibra) — REST, on demand.
    (Unity Catalog is already covered via the Databricks connector.)
 
 **Out of scope — Kafka / event schemas.** "Kafka as a source" means the Schema Registry

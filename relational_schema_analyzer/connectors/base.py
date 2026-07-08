@@ -86,6 +86,7 @@ SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
     "duckdb",
     "databricks",
     "dbt",
+    "osi",
     "csv",
 )
 
@@ -207,6 +208,10 @@ def create_connector(
         from .dbt_manifest import DbtManifestConnector
 
         return DbtManifestConnector(connection_string, schema_name=schema_name)
+    if key == "osi":
+        from .osi import OsiConnector
+
+        return OsiConnector(connection_string, schema_name=schema_name)
     if key == "csv":
         from .csv_source import CsvConnector
 

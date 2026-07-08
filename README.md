@@ -59,8 +59,12 @@ relational-schema-analyzer owl      --from-snapshot physical.json --format turtl
 ```
 
 Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`,
-and `dbt` (a dbt `manifest.json` — tests/contracts → constraints + FKs; the first
-data-catalog source, see `docs/DESIGN.md` §9.3.1).
+plus two **data-catalog** sources (see `docs/DESIGN.md` §9.3.1): `dbt` (a dbt
+`manifest.json` — tests/contracts → constraints + FKs) and `osi` (an Open Semantic
+Interchange `*.osi.yaml` model — datasets/fields/primary_key/unique_keys → tables +
+constraints, `relationships` → FKs; OSI carries no column types, so types degrade to
+`temporal` for `is_time` fields and `string` otherwise). The `osi` source needs
+PyYAML: `pip install 'relational-schema-analyzer[osi]'`.
 
 **Consumer metadata passthrough (0.2.0).** `Column` and `Table` carry an optional
 `extra: dict` that the analyzer never reads or interprets — it only guarantees the
