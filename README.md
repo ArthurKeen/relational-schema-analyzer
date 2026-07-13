@@ -38,7 +38,18 @@ conceptual baseline that emits a contract-valid `{conceptualSchema, physicalMapp
 bundle with no LLM; OWL (Turtle / JSON-LD) exports and a CLI; optional, additive LLM
 refinement; and the v1 tool-contract entrypoint + MCP server. Two data-catalog sources
 (`dbt`, `osi`) ship alongside the seven live/file sources. Remaining work is the live Docker
-introspection corpus and the downstream `r2g` / `arango-ontoextract` integration PRs. See:
+introspection corpus and the downstream `r2g` / `arango-ontoextract` integration PRs.
+
+**Production boundary.** RSA is the production-grade core for relational schema
+analysis in ArangoDB Solutions: downstream systems — the
+[`r2g`](https://github.com/ArthurKeen/r2g-arango) reference application and the
+contextual-data-fabric building blocks — depend on RSA's **versioned PyPI
+releases** and its stable `{conceptualSchema, physicalMapping, metadata}` **tool
+contract**, not on r2g internals. RSA is pre-1.0 and under active development,
+so consumers should **pin a version**; the tool-contract bundle shape is the
+stability surface.
+
+See:
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, data model, tool contract, OWL mapping
 - [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) — phased delivery plan & extraction inventory
