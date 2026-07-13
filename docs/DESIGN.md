@@ -87,27 +87,26 @@ The shared contract for the conceptual consumers is still the JSON bundle
 
 ## 2. High-level architecture
 
-```text
-                         ┌─────────────────────────────────────────┐
-                         │           relational_schema_analyzer      │
-                         │                                           │
-  source URL ─────────►  │  connectors/  ──►  PhysicalSchema         │
-                         │       (pg, mysql, mssql, snowflake, csv)  │
-                         │                        │                  │
-                         │   fk_inference (optional, when FKs absent)│
-                         │                        │                  │
-                         │                        ▼                  │
-                         │  baseline.py (deterministic rules)        │
-                         │       + optional llm/ refinement          │
-                         │                        │                  │
-                         │                        ▼                  │
-                         │   ConceptualSchema + PhysicalMapping      │
-                         │                + Metadata                 │
-                         │                        │                  │
-                         │   exports: bundle JSON │ owl ttl/jsonld   │
-                         └────────────────────────┼──────────────────┘
-                                                  ▼
-                            CLI  ·  MCP server  ·  Python API
+```mermaid
+flowchart TD
+    src["source URL / catalog artifact"]
+    subgraph rsa["relational_schema_analyzer"]
+        conn["connectors/<br/>pg · mysql · mssql · snowflake · duckdb · databricks · csv · dbt · osi"]
+        phys["PhysicalSchema"]
+        fk["fk_inference<br/>(optional, when FKs absent)"]
+        base["baseline.py (deterministic rules)<br/>+ optional llm/ refinement"]
+        model["ConceptualSchema + PhysicalMapping + Metadata"]
+        exp["exports: bundle JSON · owl ttl/jsonld"]
+    end
+    out["CLI · MCP server · Python API"]
+
+    src --> conn
+    conn --> phys
+    phys --> fk
+    fk --> base
+    base --> model
+    model --> exp
+    exp --> out
 ```
 
 Mirrors the ArangoDB analyzer's split:

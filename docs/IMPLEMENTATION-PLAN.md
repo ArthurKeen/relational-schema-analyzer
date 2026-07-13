@@ -262,9 +262,22 @@ available backend with capability gating):
 
 ---
 
-## Suggested milestone cut
+## Release history
 
-- **v0.1.0** — Phases 0–2 (physical core + baseline conceptual model + JSON bundle)
-- **v0.2.0** — Phase 3 (OWL exports + CLI + contract validation)
-- **v0.3.0** — Phase 5 r2g + ontoextract integrations
-- **v0.4.0** — Phase 4 LLM refinement
+Actual cut (GitHub releases / PyPI), which differs from the original phase-by-phase
+projection — the whole core (Phases 0–5) landed together in the first release:
+
+- **v0.1.0** — first release: physical core across 7 sources (PG / MySQL / SQL Server /
+  Snowflake / DuckDB / Databricks / CSV), deterministic conceptual baseline + FK inference,
+  OWL (Turtle / JSON-LD) exports, CLI, optional LLM refinement, and the tool-contract + MCP
+  server.
+- **v0.2.0** — additive `Column` / `Table` `extra: dict` consumer-metadata passthrough
+  (serialized only when non-empty; unblocks the r2g dependency-reversal compat layer).
+- **v0.3.0** — physical-model enrichment for the AOE contract + the source-scope ADR
+  (DESIGN §9.3.1) and the first data-catalog source: **dbt** (`manifest.json`).
+- **v0.4.0** — second data-catalog source: **OSI** (`*.osi.yaml`).
+
+Planned next:
+
+- **v0.5.0** — live Docker introspection corpus (Pagila / Chinook / Northwind) + the
+  downstream `r2g` and `arango-ontoextract` integration PRs; shared contract package.

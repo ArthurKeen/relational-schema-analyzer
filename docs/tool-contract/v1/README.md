@@ -29,9 +29,11 @@ fields**, which carry relational rather than ArangoDB semantics:
 | Entity back-refs | `collectionName` | `tableName`, `schemaName`, `primaryKey` |
 | Relationship back-refs | `edgeCollectionName` | `fromTable`/`fromColumns`/`toTable`/`toColumns`, `joinTable`/`joinFromColumns`/`joinToColumns`/`attributeColumns` |
 
-> **Status:** the relational fields above have been added alongside the inherited Arango
-> fields. The copied schema still carries Arango-only blocks (sharding, tenant scope,
-> graphRag roles, vertex-centric indexes). A fully pruned relational schema is authored in
-> **Phase 2/3** once `mapping.py` fixes the exact relational shape, and bundle validation is
-> wired into CI in **Phase 3** (see `docs/IMPLEMENTATION-PLAN.md`). Until then these files
-> document the target shape and inherited contract, not a strict validator.
+> **Status:** the relational fields above are in place, and emitted bundles are validated
+> against `response.schema.json` in the test suite (`tests/test_golden_csv.py::…::
+> test_validates_against_contract`; success criterion S2). The schema is intentionally a
+> **superset** — it retains inherited Arango-only blocks (sharding, tenant scope, graphRag
+> roles, vertex-centric indexes) so the same contract shape is shared with
+> `arangodb-schema-analyzer` — rather than a pruned relational-only schema. Consumers should
+> read the relational back-refs and ignore the Arango-only blocks (which the relational
+> analyzer never populates).

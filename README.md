@@ -11,27 +11,34 @@ emits the **same tool-contract bundle shape** so that downstream consumers
 (`arango-ontoextract`, transpilers, and ETL tools such as `r2g`) can treat relational and
 ArangoDB sources interchangeably.
 
-```text
-PostgreSQL / MySQL / SQL Server / Snowflake / CSV
-        │
-        ▼  introspect (live catalog views, not DDL parsing)
-   Physical Schema  (tables, columns, PKs, FKs, types)
-        │
-        ▼  infer (deterministic baseline + optional LLM refinement)
-   { conceptualSchema, physicalMapping, metadata }   ← canonical JSON bundle
-        │
-        ├──► OWL Turtle / JSON-LD       (arango-ontoextract, ontology tooling)
-        ├──► relational physical view   (SQL-native query tooling, future)
-        └──► consumed by r2g            (drives ArangoDB MappingConfig generation)
+```mermaid
+flowchart TD
+    live["Live / file sources<br/>PostgreSQL · MySQL · SQL Server · Snowflake · DuckDB · Databricks · CSV"]
+    catalog["Data-catalog sources<br/>dbt manifest.json · OSI *.osi.yaml"]
+    phys["Physical Schema<br/>tables · columns · PKs · FKs · types"]
+    bundle["Canonical JSON bundle<br/>conceptualSchema · physicalMapping · metadata"]
+    owl["OWL Turtle / JSON-LD<br/>arango-ontoextract, ontology tooling"]
+    view["Relational physical view<br/>SQL-native query tooling (future)"]
+    r2g["Consumed by r2g<br/>drives ArangoDB MappingConfig generation"]
+
+    live -->|"introspect (live catalog views, not DDL parsing)"| phys
+    catalog -->|"parse catalog artifact"| phys
+    phys -->|"infer (deterministic baseline + optional LLM refinement)"| bundle
+    bundle --> owl
+    bundle --> view
+    bundle --> r2g
 ```
 
 ## Status
 
-Early development. **Phases 0–3 implemented**: the physical core (connectors, types,
-FK inference) is extracted from `r2g`; the deterministic conceptual baseline emits a
-contract-valid `{conceptualSchema, physicalMapping, metadata}` bundle with no LLM; and
-OWL (Turtle / JSON-LD) exports + a CLI are in place. Next: optional LLM refinement
-(Phase 4) and ecosystem integration (Phase 5). See:
+Active development — **v0.4.0 on [PyPI](https://pypi.org/project/relational-schema-analyzer/)**
+(`pip install relational-schema-analyzer`). All core phases (0–5) are implemented: the
+physical core (connectors, types, FK inference) extracted from `r2g`; a deterministic
+conceptual baseline that emits a contract-valid `{conceptualSchema, physicalMapping, metadata}`
+bundle with no LLM; OWL (Turtle / JSON-LD) exports and a CLI; optional, additive LLM
+refinement; and the v1 tool-contract entrypoint + MCP server. Two data-catalog sources
+(`dbt`, `osi`) ship alongside the seven live/file sources. Remaining work is the live Docker
+introspection corpus and the downstream `r2g` / `arango-ontoextract` integration PRs. See:
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, data model, tool contract, OWL mapping
 - [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) — phased delivery plan & extraction inventory
