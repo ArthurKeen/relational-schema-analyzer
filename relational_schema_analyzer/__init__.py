@@ -36,6 +36,11 @@ from .mapping import PhysicalMapping
 from .metadata import fingerprint_physical_schema
 from .providers import list_providers, register_provider
 from .owl_export import export_owl_jsonld, export_owl_turtle
+from .r2rml_export import (
+    DEFAULT_R2RML_DATA_IRI,
+    DEFAULT_R2RML_MAPPING_IRI,
+    export_r2rml_turtle,
+)
 from .schema_diff import diff_schemas
 from .tool import run_tool
 from .topo_sort import topological_sort_tables
@@ -81,6 +86,9 @@ __all__ = [
     "export_bundle",
     "export_owl_turtle",
     "export_owl_jsonld",
+    "export_r2rml_turtle",
+    "DEFAULT_R2RML_DATA_IRI",
+    "DEFAULT_R2RML_MAPPING_IRI",
     # Phase 5 — tool contract / MCP
     "run_tool",
     # Phase 4 — optional LLM refinement

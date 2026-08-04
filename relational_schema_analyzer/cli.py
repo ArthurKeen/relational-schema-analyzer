@@ -8,6 +8,7 @@ physical.json``), then emits JSON / OWL to a file or stdout.
     relational-schema-analyzer snapshot --source postgresql --url ... -o physical.json
     relational-schema-analyzer analyze  --from-snapshot physical.json --pretty
     relational-schema-analyzer owl      --source postgresql --url ... --format turtle
+    relational-schema-analyzer r2rml    --source postgresql --url ...
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ from typing import Any
 from . import __version__
 from .analyzer import RelationalSchemaAnalyzer
 from .connectors import create_connector
+from .r2rml_export import (
+    DEFAULT_R2RML_DATA_IRI,
+    DEFAULT_R2RML_MAPPING_IRI,
+    export_r2rml_turtle,
+)
 from .owl_export import (
     DEFAULT_OWL_BASE_IRI,
     DEFAULT_OWL_PHYSICAL_IRI,
@@ -112,6 +118,21 @@ def _cmd_owl(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_r2rml(args: argparse.Namespace) -> int:
+    physical = _load_physical(args)
+    analysis = RelationalSchemaAnalyzer().analyze(physical)
+    _emit(
+        export_r2rml_turtle(
+            analysis,
+            base_iri=args.iri_base,
+            data_iri=args.data_iri_base,
+            mapping_iri=args.mapping_iri_base,
+        ),
+        args.out,
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="relational-schema-analyzer",
@@ -141,6 +162,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--phys-iri-base", default=DEFAULT_OWL_PHYSICAL_IRI, help="Physical-annotation IRI base"
     )
     p_owl.set_defaults(func=_cmd_owl)
+
+    p_r2rml = sub.add_parser(
+        "r2rml", help="Emit a W3C R2RML mapping document (Turtle)"
+    )
+    _add_source_args(p_r2rml)
+    _add_output_args(p_r2rml)
+    # Shares --iri-base with `owl` on purpose: the mapping has to populate the
+    # same ontology the OWL export declares.
+    p_r2rml.add_argument(
+        "--iri-base", default=DEFAULT_OWL_BASE_IRI, help="Conceptual IRI base (match `owl`)"
+    )
+    p_r2rml.add_argument(
+        "--data-iri-base", default=DEFAULT_R2RML_DATA_IRI, help="Base for row subject IRIs"
+    )
+    p_r2rml.add_argument(
+        "--mapping-iri-base",
+        default=DEFAULT_R2RML_MAPPING_IRI,
+        help="Base for the TriplesMap resources themselves",
+    )
+    p_r2rml.set_defaults(func=_cmd_r2rml)
 
     return parser
 
