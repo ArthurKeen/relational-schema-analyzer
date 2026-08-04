@@ -125,6 +125,45 @@ class TestForeignKeyUniqueHint:
         assert "is_unique" not in fk.model_dump()
 
 
+class TestForeignKeyEnforcedHint:
+    def test_enforced_defaults_to_true(self):
+        fk = ForeignKey(column="user_id", foreign_table="users", foreign_column="id")
+        assert fk.enforced is True
+
+    def test_unenforced_round_trips(self):
+        fk = ForeignKey(column="user_id", foreign_table="users", foreign_column="id",
+                        enforced=False)
+        dumped = fk.model_dump()
+        assert dumped["enforced"] is False
+        assert ForeignKey.model_validate(dumped).enforced is False
+
+    def test_enforced_omitted_when_true_so_fingerprints_are_unchanged(self):
+        # Backward compatibility: a schema from an enforcing source fingerprints
+        # identically to how it did before the field existed.
+        from relational_schema_analyzer.metadata import fingerprint_physical_schema
+
+        schema = PhysicalSchema(
+            tables={
+                "users": Table(
+                    name="users",
+                    columns=[Column(name="id", data_type="integer", is_primary_key=True)],
+                    primary_key=["id"],
+                ),
+                "orders": Table(
+                    name="orders",
+                    columns=[Column(name="user_id", data_type="integer")],
+                    foreign_keys=[ForeignKey(column="user_id", foreign_table="users",
+                                             foreign_column="id")],
+                ),
+            }
+        )
+        assert '"enforced"' not in schema.model_dump_json()
+        # An unenforced FK *does* change the fingerprint — it is real drift.
+        unenforced = PhysicalSchema.model_validate(schema.model_dump())
+        unenforced.tables["orders"].foreign_keys[0].enforced = False
+        assert fingerprint_physical_schema(unenforced) != fingerprint_physical_schema(schema)
+
+
 class TestProvenanceRoundTrip:
     def test_source_provenance_survives_serialization(self):
         schema = PhysicalSchema(

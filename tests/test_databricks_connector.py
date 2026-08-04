@@ -154,3 +154,23 @@ class TestIntrospection:
         conn = DatabricksConnector("databricks://:tok@host/sql/1.0/warehouses/x")
         with pytest.raises(ImportError, match="relational-schema-analyzer\\[databricks\\]"):
             conn.get_schema()
+
+
+class TestUnenforcedConstraints:
+    """Unity Catalog never enforces PK/FK — the FK is intent, not proof."""
+
+    def test_foreign_keys_are_marked_unenforced(self, databricks_shop):
+        orders = conf._find_table(databricks_shop, "orders")
+        assert orders.foreign_keys[0].enforced is False
+
+    def test_unenforced_flag_survives_snapshot_round_trip(self, databricks_shop):
+        from relational_schema_analyzer.types import PhysicalSchema
+
+        restored = PhysicalSchema.model_validate_json(databricks_shop.model_dump_json())
+        assert conf._find_table(restored, "orders").foreign_keys[0].enforced is False
+
+    def test_baseline_flags_the_schema_as_unenforced(self, databricks_shop):
+        from relational_schema_analyzer.baseline import infer_baseline
+
+        result = infer_baseline(databricks_shop)
+        assert "unenforced_foreign_keys" in result["detectedPatterns"]

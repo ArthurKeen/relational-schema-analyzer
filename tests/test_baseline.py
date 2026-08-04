@@ -175,7 +175,11 @@ class TestInferredForeignKeys:
         rel = _rel_by_type(result, "Book_Author")
         assert rel["inferred"] is True
         assert 0.0 < rel["confidence"] <= 1.0
-        assert result["physicalMapping"]["relationships"]["Book_Author"]["inferred"] is True
+        pm = result["physicalMapping"]["relationships"]["Book_Author"]
+        assert pm["inferred"] is True
+        # Invariant: a missing `enforced` means the source vouches for the join,
+        # so an inferred FK must say so explicitly.
+        assert pm["enforced"] is False
 
     def test_no_inference_when_fks_declared(self):
         author = Table(name="author", columns=[_col("id", pk=True)], primary_key=["id"])
@@ -190,3 +194,158 @@ class TestInferredForeignKeys:
         assert "inferred_foreign_keys" not in result["detectedPatterns"]
         rel = _rel_by_type(result, "Book_Author")
         assert "inferred" not in rel
+
+    def test_declared_fk_on_one_table_does_not_suppress_inference_on_another(self):
+        # The gate is per table, not per schema: `book` declares its FK, `review`
+        # declares nothing, so `review.book_id` is still inferred. Previously one
+        # declared FK anywhere disabled inference for the whole schema.
+        author = Table(name="author", columns=[_col("id", pk=True)], primary_key=["id"])
+        book = Table(
+            name="book",
+            columns=[_col("id", pk=True), _col("author_id")],
+            primary_key=["id"],
+            foreign_keys=[ForeignKey(column="author_id", foreign_table="author",
+                                     foreign_column="id")],
+        )
+        review = Table(
+            name="review",
+            columns=[_col("id", pk=True), _col("book_id")],
+            primary_key=["id"],
+        )
+        result = infer_baseline(_schema(author, book, review))
+        assert "inferred_foreign_keys" in result["detectedPatterns"]
+        assert _rel_by_type(result, "Review_Book")["inferred"] is True
+        # The authoritative FK is untouched.
+        assert "inferred" not in _rel_by_type(result, "Book_Author")
+        assert any("declared no foreign keys" in a for a in result["assumptions"])
+
+
+# ── Schema qualification & join-table parent columns ────────────────
+
+
+class TestPhysicalMappingCompleteness:
+    """Both are prerequisites for building a valid R2RML mapping."""
+
+    def test_entity_mapping_records_the_source_schema(self):
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"],
+                      schema_name="sales")
+        result = infer_baseline(_schema(users))
+        assert result["physicalMapping"]["entities"]["Users"]["schema"] == "sales"
+
+    def test_schema_omitted_when_source_reports_none(self):
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"])
+        result = infer_baseline(_schema(users))
+        assert "schema" not in result["physicalMapping"]["entities"]["Users"]
+
+    def test_join_table_mapping_records_schema_and_parent_columns(self):
+        # `basket.product_sku` references `products.sku` — a parent column that
+        # is *not* named like the child, so it can't be reconstructed by guesswork.
+        orders = Table(name="orders", columns=[_col("id", pk=True)], primary_key=["id"],
+                       schema_name="sales")
+        products = Table(name="products", columns=[_col("sku", "varchar", pk=True)],
+                         primary_key=["sku"], schema_name="sales")
+        basket = Table(
+            name="basket",
+            schema_name="sales",
+            columns=[_col("order_id"), _col("product_sku", "varchar")],
+            primary_key=["order_id", "product_sku"],
+            foreign_keys=[
+                ForeignKey(column="order_id", foreign_table="orders", foreign_column="id"),
+                ForeignKey(column="product_sku", foreign_table="products",
+                           foreign_column="sku"),
+            ],
+        )
+        result = infer_baseline(_schema(orders, products, basket))
+        jm = result["physicalMapping"]["relationships"]["Orders_Products"]
+        assert jm["style"] == "JOIN_TABLE"
+        assert jm["schema"] == "sales"
+        assert jm["joinFromColumns"] == ["order_id"]
+        assert jm["joinFromParentColumns"] == ["id"]
+        assert jm["joinToColumns"] == ["product_sku"]
+        assert jm["joinToParentColumns"] == ["sku"]
+
+
+# ── Unenforced (lakehouse) foreign keys ─────────────────────────────
+
+
+class TestUnenforcedForeignKeys:
+    """Unity Catalog / Glue / Iceberg declare FKs but never validate them."""
+
+    @staticmethod
+    def _uc_fk(column, foreign_table, foreign_column="id"):
+        return ForeignKey(
+            column=column,
+            foreign_table=foreign_table,
+            foreign_column=foreign_column,
+            enforced=False,
+        )
+
+    def test_unenforced_fk_still_becomes_a_relationship(self):
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"])
+        orders = Table(
+            name="orders",
+            columns=[_col("id", pk=True), _col("user_id")],
+            primary_key=["id"],
+            foreign_keys=[self._uc_fk("user_id", "users")],
+        )
+        result = infer_baseline(_schema(users, orders))
+        rel = _rel_by_type(result, "Orders_Users")
+        assert rel["cardinality"] == "1:N"
+        assert "inferred" not in rel
+
+    def test_unenforced_fk_is_flagged_in_mapping_and_patterns(self):
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"])
+        orders = Table(
+            name="orders",
+            columns=[_col("id", pk=True), _col("user_id")],
+            primary_key=["id"],
+            foreign_keys=[self._uc_fk("user_id", "users")],
+        )
+        result = infer_baseline(_schema(users, orders))
+        assert "unenforced_foreign_keys" in result["detectedPatterns"]
+        assert result["physicalMapping"]["relationships"]["Orders_Users"]["enforced"] is False
+
+    def test_enforced_fk_carries_no_enforced_key(self):
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"])
+        orders = Table(
+            name="orders",
+            columns=[_col("id", pk=True), _col("user_id")],
+            primary_key=["id"],
+            foreign_keys=[ForeignKey(column="user_id", foreign_table="users",
+                                     foreign_column="id")],
+        )
+        result = infer_baseline(_schema(users, orders))
+        assert "unenforced_foreign_keys" not in result["detectedPatterns"]
+        assert "enforced" not in result["physicalMapping"]["relationships"]["Orders_Users"]
+
+    def test_unenforced_fk_does_not_suppress_inference_on_same_table(self):
+        # The heart of the Databricks case: `orders` declares user_id but not
+        # product_id. An unenforced declaration is a hint, so inference still
+        # runs for the table — and never duplicates the column already declared.
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"])
+        products = Table(name="products", columns=[_col("id", pk=True)], primary_key=["id"])
+        orders = Table(
+            name="orders",
+            columns=[_col("id", pk=True), _col("user_id"), _col("product_id")],
+            primary_key=["id"],
+            foreign_keys=[self._uc_fk("user_id", "users")],
+        )
+        result = infer_baseline(_schema(users, products, orders))
+        assert _rel_by_type(result, "Orders_Products")["inferred"] is True
+        assert "inferred" not in _rel_by_type(result, "Orders_Users")
+        rels = result["conceptualSchema"]["relationships"]
+        assert sum(1 for r in rels if r["toEntity"] == "Users") == 1
+        assert any("informational only" in a for a in result["assumptions"])
+
+    def test_review_is_not_forced_by_unenforced_fks_alone(self):
+        # A fully-declared lakehouse schema shouldn't lose confidence purely for
+        # its dialect — the pattern is informational, not a review trigger.
+        users = Table(name="users", columns=[_col("id", pk=True)], primary_key=["id"])
+        orders = Table(
+            name="orders",
+            columns=[_col("id", pk=True), _col("user_id")],
+            primary_key=["id"],
+            foreign_keys=[self._uc_fk("user_id", "users")],
+        )
+        result = infer_baseline(_schema(users, orders))
+        assert result["reviewRequired"] is False

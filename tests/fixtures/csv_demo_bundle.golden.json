@@ -327,6 +327,7 @@
     },
     "relationships": {
       "Books_Authors": {
+        "enforced": false,
         "fromColumns": [
           "author_id"
         ],
@@ -339,6 +340,7 @@
         "toTable": "authors"
       },
       "Loans_Books": {
+        "enforced": false,
         "fromColumns": [
           "book_id"
         ],
@@ -351,6 +353,7 @@
         "toTable": "books"
       },
       "Loans_Members": {
+        "enforced": false,
         "fromColumns": [
           "member_id"
         ],

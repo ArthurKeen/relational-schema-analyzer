@@ -34,6 +34,15 @@ class ForeignKey(BaseModel):
     # table, the relationship is 1:1 (vs. many:1). Lets consumers decide
     # functional vs. non-functional object properties (AOE contract).
     is_unique: bool = False
+    # Trust hint: ``False`` when the source declares the constraint but does not
+    # enforce referential integrity, so the FK is *intent*, not proof. Lakehouse
+    # catalogs (Unity Catalog, Glue/Hive, Iceberg) are informational-only:
+    # Databricks documents PK/FK as "informational only and aren't enforced", and
+    # its ``information_schema.table_constraints.ENFORCED`` is hardcoded ``'NO'``
+    # — so this is a property of the *dialect*, set by the connector, not a column
+    # it can read. Enforced (the RDBMS norm) is the default so existing sources
+    # and their fingerprints are unaffected.
+    enforced: bool = True
 
     @model_validator(mode="before")
     @classmethod
@@ -70,6 +79,11 @@ class ForeignKey(BaseModel):
             d["constraint_name"] = self.constraint_name
         if self.is_unique:
             d["is_unique"] = True
+        if not self.enforced:
+            # Omitted when enforced (the default) so dumps — and therefore
+            # ``physicalSchemaFingerprint`` — stay byte-identical for every
+            # source that predates this field.
+            d["enforced"] = False
         return d
 
 

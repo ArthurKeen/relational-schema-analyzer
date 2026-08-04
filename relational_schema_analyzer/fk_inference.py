@@ -1128,6 +1128,188 @@ class SQLServerValueSampler:
         return self._scalar(q, (delimiter, self.limit))
 
 
+# ── Concrete Databricks value sampler ───────────────────────────────
+
+
+class DatabricksValueSampler:
+    """Sampler that computes FK value-overlap ratios via Databricks SQL.
+
+    Value overlap matters more on Databricks than anywhere else: Unity Catalog
+    never enforces primary/foreign keys, so a declared FK is unvalidated and an
+    undeclared one is invisible to the catalog. Sampling is the only evidence
+    that two columns actually join.
+
+    Spark SQL has no ``FILTER (WHERE …)`` aggregate, so — like
+    :class:`MySQLValueSampler` — the overlap fraction is a ``SUM(CASE WHEN …)``
+    over a ``LEFT JOIN`` of two bounded, distinct-valued subqueries. Tables are
+    addressed with Unity Catalog's three-level ``catalog.schema.table`` name.
+    Row limits are inlined rather than bound, because Spark SQL requires a
+    constant in ``LIMIT``; they are ints under our control, never user text.
+
+    Any driver error is logged and surfaced as ``None`` so the name-based score
+    still wins. Call :meth:`close` to release the connection.
+    """
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        schema_name: str = "",
+        limit: int = 10_000,
+    ) -> None:
+        from .connectors.databricks_source import (
+            _DEFAULT_SCHEMA_SENTINELS,
+            _parse_databricks_url,
+        )
+
+        self.connection_string = connection_string
+        self.limit = max(100, int(limit))
+        parts = _parse_databricks_url(connection_string)
+        self._connect_params = {
+            "server_hostname": parts["server_hostname"],
+            "http_path": parts["http_path"],
+            "access_token": parts["access_token"],
+        }
+        self.catalog = parts["catalog"]
+        self.schema_name = (
+            parts["schema"] if schema_name in _DEFAULT_SCHEMA_SENTINELS else schema_name
+        )
+        self._conn = None
+
+    def _conn_lazy(self):
+        if self._conn is None:
+            from .connectors.databricks_source import _load_databricks
+
+            dbsql = _load_databricks()
+            self._conn = dbsql.connect(
+                catalog=self.catalog, schema=self.schema_name, **self._connect_params
+            )
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = None
+
+    def __enter__(self) -> "DatabricksValueSampler":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _qi(self, name: str) -> str:
+        return "`" + name.replace("`", "``") + "`"
+
+    def _qt(self, table: str) -> str:
+        """Fully-qualified ``catalog.schema.table``."""
+        return f"{self._qi(self.catalog)}.{self._qi(self.schema_name)}.{self._qi(table)}"
+
+    def __call__(
+        self,
+        local_table: str,
+        local_column: str,
+        foreign_table: str,
+        foreign_column: str,
+    ) -> SamplerResult:
+        """Return the fraction of distinct local values present in the
+        foreign column, or ``None`` if the query failed."""
+        q = f"""
+            SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
+                       / GREATEST(COUNT(*), 1) AS overlap
+            FROM (
+                SELECT DISTINCT {self._qi(local_column)} AS v
+                FROM {self._qt(local_table)}
+                WHERE {self._qi(local_column)} IS NOT NULL
+                LIMIT {self.limit}
+            ) l
+            LEFT JOIN (
+                SELECT DISTINCT {self._qi(foreign_column)} AS v
+                FROM {self._qt(foreign_table)}
+                LIMIT {self.limit}
+            ) f ON l.v = f.v
+        """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
+        result = self._scalar(q, ())
+        if result is None:
+            logger.warning(
+                "fk_sampler_query_failed",
+                local=f"{local_table}.{local_column}",
+                foreign=f"{foreign_table}.{foreign_column}",
+            )
+        return result
+
+    # ── Denormalization probes (PRD Phase 11) ──────────────────────
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("databricks_sampler_connect_failed", error=str(err))
+            return None
+        try:
+            cur = conn.cursor()
+            try:
+                if params:
+                    cur.execute(query, params)
+                else:
+                    cur.execute(query)
+                row = cur.fetchone()
+            finally:
+                cur.close()
+            if not row or row[0] is None:
+                return None
+            return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning("databricks_sampler_query_failed", error=str(err))
+            return None
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        q = f"""
+            SELECT COUNT(DISTINCT v) / GREATEST(COUNT(*), 1) AS ratio
+            FROM (
+                SELECT {self._qi(column)} AS v
+                FROM {self._qt(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+                LIMIT {self.limit}
+            ) s
+        """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
+        return self._scalar(q, ())
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        det = ", ".join(self._qi(c) for c in determinant_columns)
+        not_null = " AND ".join(f"{self._qi(c)} IS NOT NULL" for c in determinant_columns)
+        q = f"""
+            SELECT AVG(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END) AS frac
+            FROM (
+                SELECT COUNT(DISTINCT dep) AS dcount
+                FROM (
+                    SELECT {det}, {self._qi(dependent_column)} AS dep
+                    FROM {self._qt(table)}
+                    LIMIT {self.limit}
+                ) s
+                WHERE {not_null}
+                GROUP BY {det}
+            ) g
+        """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
+        return self._scalar(q, ())
+
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        q = f"""
+            SELECT AVG(CASE WHEN LOCATE(%s, v) > 0 THEN 1.0 ELSE 0.0 END) AS rate
+            FROM (
+                SELECT {self._qi(column)} AS v
+                FROM {self._qt(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+                LIMIT {self.limit}
+            ) s
+        """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
+        return self._scalar(q, (delimiter,))
+
+
 # ── Concrete CSV value sampler ──────────────────────────────────────
 
 
@@ -1321,10 +1503,10 @@ def create_value_sampler(
 
     PostgreSQL (incl. ``postgres`` / ``pg`` aliases) → :class:`PostgresValueSampler`,
     MySQL / MariaDB → :class:`MySQLValueSampler`, SQL Server →
-    :class:`SQLServerValueSampler`, CSV → :class:`CsvValueSampler`; any other
-    type returns ``None`` (the caller should fall back to name-only inference).
-    Connector / import errors are allowed to propagate so callers can decide
-    whether to log-and-continue.
+    :class:`SQLServerValueSampler`, Databricks → :class:`DatabricksValueSampler`,
+    CSV → :class:`CsvValueSampler`; any other type returns ``None`` (the caller
+    should fall back to name-only inference). Connector / import errors are
+    allowed to propagate so callers can decide whether to log-and-continue.
     """
     from .connectors.base import (
         expand_env_vars,
@@ -1343,6 +1525,10 @@ def create_value_sampler(
         return MySQLValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if is_sqlserver(source_type):
         return SQLServerValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if normalize_source_type(source_type) == "databricks":
+        return DatabricksValueSampler(
+            connection_string, schema_name=pg_schema, limit=limit
+        )
     if normalize_source_type(source_type) == "csv":
         return CsvValueSampler(
             connection_string,

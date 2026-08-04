@@ -4,6 +4,7 @@ import pytest
 
 from relational_schema_analyzer.fk_inference import (
     CsvValueSampler,
+    DatabricksValueSampler,
     InferenceOptions,
     InferredForeignKey,
     MySQLValueSampler,
@@ -633,6 +634,93 @@ class TestSQLServerValueSampler:
         s.close()
 
 
+class TestDatabricksValueSampler:
+    """Value overlap is the only FK evidence Unity Catalog can't fake — it never
+    enforces constraints, so these queries are the verification step."""
+
+    DSN = "databricks://:tok@host/sql/1.0/warehouses/x?catalog=main&schema=sales"
+
+    @staticmethod
+    def _fake_driver(monkeypatch, rows, captured):
+        import sys
+        import types
+
+        class _Cur:
+            def execute(self, sql, params=None):
+                captured.append((" ".join(sql.split()), params))
+
+            def fetchone(self):
+                return rows
+
+            def close(self):
+                pass
+
+        class _Conn:
+            def cursor(self):
+                return _Cur()
+
+            def close(self):
+                pass
+
+        sql_mod = types.ModuleType("databricks.sql")
+        sql_mod.connect = lambda **k: _Conn()  # type: ignore[attr-defined]
+        dbx = types.ModuleType("databricks")
+        dbx.sql = sql_mod  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "databricks", dbx)
+        monkeypatch.setitem(sys.modules, "databricks.sql", sql_mod)
+
+    def test_catalog_and_schema_from_url(self):
+        s = DatabricksValueSampler(self.DSN)
+        assert s.catalog == "main"
+        assert s.schema_name == "sales"
+
+    def test_public_sentinel_falls_back_to_url_schema(self):
+        # `infer-fks` forwards snap.pg_schema, which defaults to "public".
+        assert DatabricksValueSampler(self.DSN, schema_name="public").schema_name == "sales"
+
+    def test_explicit_schema_overrides_url(self):
+        s = DatabricksValueSampler(self.DSN, schema_name="analytics")
+        assert s.schema_name == "analytics"
+
+    def test_overlap_ratio_returned(self, monkeypatch):
+        captured: list = []
+        self._fake_driver(monkeypatch, (0.75,), captured)
+        s = DatabricksValueSampler(self.DSN)
+        assert s("orders", "user_id", "users", "id") == 0.75
+
+    def test_query_uses_three_level_names_and_inlined_limit(self, monkeypatch):
+        # Spark SQL requires a constant in LIMIT, so it must not be bound.
+        captured: list = []
+        self._fake_driver(monkeypatch, (1.0,), captured)
+        DatabricksValueSampler(self.DSN, limit=500)("orders", "user_id", "users", "id")
+        sql, params = captured[0]
+        assert "`main`.`sales`.`orders`" in sql
+        assert "`main`.`sales`.`users`" in sql
+        assert "LIMIT 500" in sql
+        assert not params
+
+    def test_null_result_is_none(self, monkeypatch):
+        self._fake_driver(monkeypatch, (None,), [])
+        s = DatabricksValueSampler(self.DSN)
+        assert s("orders", "user_id", "users", "id") is None
+
+    def test_connect_failure_returns_none(self):
+        # No driver installed / bogus host: the sampler swallows the error so
+        # name-based scoring still wins.
+        s = DatabricksValueSampler("databricks://:tok@127.0.0.1:1/sql/1.0/warehouses/x")
+        assert s("orders", "user_id", "users", "id") is None
+        s.close()
+
+    def test_denormalization_probes_are_available(self, monkeypatch):
+        captured: list = []
+        self._fake_driver(monkeypatch, (0.5,), captured)
+        s = DatabricksValueSampler(self.DSN)
+        assert s.distinct_ratio("orders", "user_id") == 0.5
+        assert s.group_single_valued("orders", ["user_id"], "city") == 0.5
+        assert s.delimiter_rate("orders", "tags", ",") == 0.5
+        assert captured[-1][1] == (",",)
+
+
 class TestCreateValueSamplerDispatch:
     def test_postgres(self):
         s = create_value_sampler("postgresql", "postgresql://u:p@h/db")
@@ -657,6 +745,12 @@ class TestCreateValueSamplerDispatch:
     def test_csv(self, tmp_path):
         s = create_value_sampler("csv", str(tmp_path))
         assert isinstance(s, CsvValueSampler)
+
+    def test_databricks(self):
+        s = create_value_sampler(
+            "databricks", "databricks://:tok@h/sql/1.0/warehouses/x?catalog=c&schema=s"
+        )
+        assert isinstance(s, DatabricksValueSampler)
 
     def test_unsupported_returns_none(self):
         assert create_value_sampler("snowflake", "snowflake://u:p@a/DB") is None

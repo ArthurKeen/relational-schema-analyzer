@@ -6,6 +6,16 @@ Databricks Unity Catalog exposes the standard ANSI ``information_schema``
 keys), so this is the same catalog-introspection pattern as the DuckDB / Postgres
 connectors — with Databricks' three-level ``catalog.schema.table`` namespace.
 
+Unlike an RDBMS, Unity Catalog **does not enforce** primary/foreign/unique keys —
+they are informational metadata that enables query optimization, and nothing
+validates the referenced rows exist. Every FK is therefore emitted with
+``enforced=False`` so the baseline treats it as a hint rather than proof (and
+still runs name-based inference for the columns UC never declared). This is a
+dialect-level fact, not something to read per constraint: UC's
+``information_schema.table_constraints.ENFORCED`` is documented as always ``'NO'``
+("reserved for future use"), so it carries no signal. CHECK constraints *are*
+enforced in Databricks and would be trustworthy — they are not read yet.
+
 Connection string (SQLAlchemy-ish; token as the password, http_path as the path)::
 
     databricks://:<access_token>@<server_hostname>/sql/1.0/warehouses/<id>?catalog=main&schema=default
@@ -235,6 +245,7 @@ class DatabricksConnector:
                         foreign_table=ref_table,
                         foreign_columns=ref_cols,
                         constraint_name=cname,
+                        enforced=False,
                     )
                 )
         return pks, uniques, fks

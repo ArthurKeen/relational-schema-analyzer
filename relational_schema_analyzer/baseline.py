@@ -183,9 +183,15 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
         entity_map: dict[str, Any] = {
             "style": "TABLE",
             "tableName": table_name,
-            "primaryKey": pk,
-            "properties": pm_props,
         }
+        # Schema qualification: without it a consumer can't build the
+        # schema-qualified name that R2RML's ``rr:tableName`` (and any generated
+        # SQL) needs, and OWL's ``phys:schemaName`` annotation has nothing to
+        # emit. Recorded whenever the source reported one.
+        if table.schema_name:
+            entity_map["schema"] = table.schema_name
+        entity_map["primaryKey"] = pk
+        entity_map["properties"] = pm_props
         if schema.tables[table_name].partition_of:
             entity_map["partitionOf"] = schema.tables[table_name].partition_of
         pm_entities[entity_name] = entity_map
@@ -199,6 +205,15 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
 
     # ── Relationships from declared FKs + join tables ──────────────────
     declared_fk_count = sum(len(t.foreign_keys) for t in schema.tables.values())
+    unenforced_fk_count = sum(
+        1 for t in schema.tables.values() for fk in t.foreign_keys if not fk.enforced
+    )
+    if unenforced_fk_count:
+        # Informational-only constraints (Unity Catalog, Glue/Hive, Iceberg):
+        # declared but never validated, so consumers should treat them as intent.
+        # Surfaced as a pattern rather than a review flag — a well-modelled
+        # lakehouse schema shouldn't lose confidence purely for its dialect.
+        _add_pattern("unenforced_foreign_keys")
 
     # Join tables → N:M relationships.
     for table_name in sorted(join_tables):
@@ -227,13 +242,26 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
                 "source": _SOURCE_BASELINE,
             }
         )
-        pm_relationships[rel_type] = {
+        join_map: dict[str, Any] = {
             "style": "JOIN_TABLE",
             "joinTable": table_name,
-            "joinFromColumns": list(fk1.columns),
-            "joinToColumns": list(fk2.columns),
-            "attributeColumns": [c.name for c in attribute_cols],
         }
+        if table.schema_name:
+            join_map["schema"] = table.schema_name
+        # Both sides of the join need *parent* columns as well as the join
+        # table's own: an R2RML ``rr:joinCondition`` pairs ``rr:child`` (the
+        # column in the join table) with ``rr:parent`` (the column it references
+        # on the entity table). Recording only the child half forced consumers
+        # to assume the parent is keyed on its PK — untrue for any FK that
+        # targets a non-PK unique column.
+        join_map["joinFromColumns"] = list(fk1.columns)
+        join_map["joinFromParentColumns"] = list(fk1.foreign_columns)
+        join_map["joinToColumns"] = list(fk2.columns)
+        join_map["joinToParentColumns"] = list(fk2.foreign_columns)
+        join_map["attributeColumns"] = [c.name for c in attribute_cols]
+        if any(not fk.enforced for fk in table.foreign_keys):
+            join_map["enforced"] = False
+        pm_relationships[rel_type] = join_map
 
     # Declared FKs on entity tables → FOREIGN_KEY relationships.
     for table_name in sorted(schema.tables):
@@ -259,13 +287,16 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
                 "source": _SOURCE_BASELINE,
             }
             relationships.append(rel)
-            pm_relationships[rel_type] = {
+            pm_rel: dict[str, Any] = {
                 "style": "FOREIGN_KEY",
                 "fromTable": table_name,
                 "fromColumns": list(fk.columns),
                 "toTable": fk.foreign_table,
                 "toColumns": list(fk.foreign_columns),
             }
+            if not fk.enforced:
+                pm_rel["enforced"] = False
+            pm_relationships[rel_type] = pm_rel
 
             if _is_shared_pk_fk(fk, table):
                 _add_pattern("inheritance_via_shared_pk")
@@ -277,9 +308,21 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
                     f"'{to_entity}'; candidate rdfs:subClassOf (review)."
                 )
 
-    # ── Fallback: infer FKs when none are declared ─────────────────────
-    if declared_fk_count == 0 and len(schema.tables) > 1:
-        inferred = infer_foreign_keys(schema)
+    # ── Fallback: infer FKs the source didn't reliably declare ─────────
+    # Gated per table, not per schema: a table with *enforced* FKs is
+    # authoritative (the source both declared the constraint and guarantees it),
+    # so we don't second-guess it. A table with none — or with only unenforced
+    # lakehouse FKs, where declaration is voluntary and sporadic — is not, so
+    # name-based inference runs for it. ``infer_foreign_keys`` already skips
+    # columns covered by a declared FK, so an unenforced FK is supplemented,
+    # never duplicated.
+    unverified_tables = {
+        name
+        for name, t in schema.tables.items()
+        if not any(fk.enforced for fk in t.foreign_keys)
+    }
+    if unverified_tables and len(schema.tables) > 1:
+        inferred = [c for c in infer_foreign_keys(schema) if c.table in unverified_tables]
         for cand in inferred:
             if cand.table in join_tables or cand.foreign_table not in entity_name_by_table:
                 continue
@@ -314,13 +357,27 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
                 "toTable": cand.foreign_table,
                 "toColumns": list(cand.foreign_columns),
                 "inferred": True,
+                # An inferred FK isn't declared at all, let alone guaranteed.
+                # Emitting this keeps one invariant true for consumers: a
+                # missing ``enforced`` means the source vouches for the join,
+                # so defaulting it to True is always safe.
+                "enforced": False,
             }
         if inferred:
             _add_pattern("inferred_foreign_keys")
             review_required = True
+            if declared_fk_count == 0:
+                reason = "No foreign keys were declared"
+            elif unenforced_fk_count:
+                reason = (
+                    f"{unenforced_fk_count} declared foreign key(s) are informational "
+                    f"only (not enforced by the source)"
+                )
+            else:
+                reason = f"{len(unverified_tables)} table(s) declared no foreign keys"
             assumptions.append(
-                f"No foreign keys were declared; {len(inferred)} relationship(s) "
-                f"were inferred from naming heuristics (review)."
+                f"{reason}; {len(inferred)} relationship(s) were inferred from "
+                f"naming heuristics (review)."
             )
 
     return {

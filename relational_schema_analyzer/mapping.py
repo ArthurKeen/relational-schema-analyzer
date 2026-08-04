@@ -17,9 +17,19 @@ Entity mapping dict shape:
                                      "nullable": bool, "unique"?: bool}}}
 Relationship mapping dict shapes:
     FOREIGN_KEY: {"style": "FOREIGN_KEY", "fromTable", "fromColumns",
-                  "toTable", "toColumns"}
-    JOIN_TABLE:  {"style": "JOIN_TABLE", "joinTable", "joinFromColumns",
-                  "joinToColumns", "attributeColumns"}
+                  "toTable", "toColumns", "enforced"?: False, "inferred"?: True}
+    JOIN_TABLE:  {"style": "JOIN_TABLE", "joinTable", "schema"?: str,
+                  "joinFromColumns", "joinFromParentColumns",
+                  "joinToColumns", "joinToParentColumns",
+                  "attributeColumns", "enforced"?: False}
+
+The ``join*ParentColumns`` pairs carry the columns each FK *references* on the
+entity table, so a consumer can build a complete join condition (R2RML's
+``rr:child`` / ``rr:parent``) instead of assuming the parent is keyed on its PK.
+
+``enforced`` is omitted when the source guarantees referential integrity, so a
+missing key always means "trustworthy"; it is ``False`` for informational-only
+lakehouse constraints and for inferred relationships.
 """
 
 from __future__ import annotations

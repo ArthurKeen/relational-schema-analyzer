@@ -48,7 +48,9 @@ _PHYS_ANNOTATION_PROPERTIES = (
     "toColumns",
     "joinTable",
     "joinFromColumns",
+    "joinFromParentColumns",
     "joinToColumns",
+    "joinToParentColumns",
 )
 
 
@@ -253,11 +255,15 @@ def _object_property_lines(r: dict[str, Any], mapping: dict[str, Any] | None) ->
                 out.append(f'{iri} phys:{phys} "{_ttl_escape(str(mapping[key]))}" .')
         if mapping.get("fromTable"):
             out.append(f'{iri} phys:tableName "{_ttl_escape(str(mapping["fromTable"]))}" .')
+        if mapping.get("schema"):
+            out.append(f'{iri} phys:schemaName "{_ttl_escape(str(mapping["schema"]))}" .')
         for key, phys in (
             ("fromColumns", "fromColumns"),
             ("toColumns", "toColumns"),
             ("joinFromColumns", "joinFromColumns"),
+            ("joinFromParentColumns", "joinFromParentColumns"),
             ("joinToColumns", "joinToColumns"),
+            ("joinToParentColumns", "joinToParentColumns"),
         ):
             value = mapping.get(key)
             if isinstance(value, list):
