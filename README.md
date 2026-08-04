@@ -3,7 +3,8 @@
 Analyze a **relational database schema** and produce a canonical **conceptual model**
 (entities / relationships / properties), a **conceptual → physical mapping** back to the
 source relational schema, and **metadata** (confidence, fingerprints, patterns). Optional
-exports include **OWL** (Turtle / JSON-LD) for ontology pipelines.
+exports include **OWL** (Turtle / JSON-LD) for ontology pipelines and **R2RML** for
+virtual knowledge graphs.
 
 This library is the relational analogue of
 [`arangodb-schema-analyzer`](https://pypi.org/project/arangodb-schema-analyzer/) and
@@ -18,6 +19,7 @@ flowchart TD
     phys["Physical Schema<br/>tables · columns · PKs · FKs · types"]
     bundle["Canonical JSON bundle<br/>conceptualSchema · physicalMapping · metadata"]
     owl["OWL Turtle / JSON-LD<br/>arango-ontoextract, ontology tooling"]
+    r2rml["R2RML mapping<br/>Ontop · Morph-KGC · virtual KG over live SQL"]
     view["Relational physical view<br/>SQL-native query tooling (future)"]
     r2g["Consumed by r2g<br/>drives ArangoDB MappingConfig generation"]
 
@@ -25,6 +27,7 @@ flowchart TD
     catalog -->|"parse catalog artifact"| phys
     phys -->|"infer (deterministic baseline + optional LLM refinement)"| bundle
     bundle --> owl
+    bundle --> r2rml
     bundle --> view
     bundle --> r2g
 ```
@@ -35,7 +38,7 @@ Active development — **v0.4.0 on [PyPI](https://pypi.org/project/relational-sc
 (`pip install relational-schema-analyzer`). All core phases (0–5) are implemented: the
 physical core (connectors, types, FK inference) extracted from `r2g`; a deterministic
 conceptual baseline that emits a contract-valid `{conceptualSchema, physicalMapping, metadata}`
-bundle with no LLM; OWL (Turtle / JSON-LD) exports and a CLI; optional, additive LLM
+bundle with no LLM; OWL (Turtle / JSON-LD) and R2RML exports and a CLI; optional, additive LLM
 refinement; and the v1 tool-contract entrypoint + MCP server. Two data-catalog sources
 (`dbt`, `osi`) ship alongside the seven live/file sources. Remaining work is the live Docker
 introspection corpus and the downstream `r2g` / `arango-ontoextract` integration PRs.
@@ -48,6 +51,44 @@ releases** and its stable `{conceptualSchema, physicalMapping, metadata}` **tool
 contract**, not on r2g internals. RSA is pre-1.0 and under active development,
 so consumers should **pin a version**; the tool-contract bundle shape is the
 stability surface.
+
+## Keys, catalogs, and enterprise scale
+
+Three questions every serious deployment asks, answered at the library level:
+
+**"Our warehouse doesn't define primary/foreign keys — do you infer them?"**
+Yes, in two layers. Cloud warehouses (Snowflake among them) accept PK/FK/UNIQUE
+*declarations* without enforcing them — and many schemas declare nothing at
+all. RSA reads **declared** constraints from the source catalog wherever they
+exist (on Snowflake via `SHOW PRIMARY KEYS` and the declared FK/unique views —
+documentation-grade metadata even when unenforced). Where nothing is declared,
+`infer_foreign_keys` proposes candidates by **name-convention heuristics**
+(`account_id` ↔ `accounts`) and confirms them with **bounded value-overlap
+sampling** — the fraction of a child column's distinct values present in the
+candidate parent, computed on samples, never bulk reads. Inferred keys carry a
+confidence score so downstream review can accept or reject them. Sampler
+coverage is per-connector (PostgreSQL, MySQL, SQL Server, CSV today; the
+Snowflake value sampler is tracked work — until then Snowflake inference is
+declared-keys + name heuristics).
+
+**"Do you use the source's own catalog?"** Yes — introspection *is* catalog
+reading: `INFORMATION_SCHEMA`/`SHOW` surfaces for tables, columns, types, and
+declared constraints, plus dbt manifests and OSI documents as first-class
+catalog sources. The principle: **never ask anyone to re-describe what their
+catalog already knows.** Planned extensions read the richer surfaces — object
+comments, governance tags, and access/query history — as inputs to relevance
+scoping (below).
+
+**"We have thousands of tables — how do you decide which ones matter?"**
+By the integration's declared **purpose**, not by introspecting everything. A
+purpose statement plus competency questions (e.g. "a Customer 360 view") ranks
+tables by relevance before extraction: purpose-term similarity against
+table/column names and comments, FK-neighborhood expansion from seed tables,
+the warehouse's own **access/query history** (the tables an organization
+actually queries are the relevant ones), and governance tags as
+include/exclude policy — with a human confirming the ranked candidate set
+rather than hand-listing tables. This is tracked as the purpose-scoped
+relevance stage of the consuming fabric's extraction pipeline.
 
 See:
 
@@ -74,7 +115,26 @@ refined = RelationalSchemaAnalyzer(
 relational-schema-analyzer snapshot --source postgresql --url "$DSN" -o physical.json
 relational-schema-analyzer analyze  --from-snapshot physical.json --pretty
 relational-schema-analyzer owl      --from-snapshot physical.json --format turtle -o schema.ttl
+relational-schema-analyzer r2rml    --from-snapshot physical.json -o mapping.ttl
 ```
+
+**R2RML export.** `owl` emits the ontology (what the concepts *are*); `r2rml` emits a
+[W3C R2RML](https://www.w3.org/TR/r2rml/) mapping (how to reach them in SQL). The class
+and property IRIs are identical in both, so feeding the pair to an R2RML processor
+(Ontop, Morph-KGC, db2triples) gives you a virtual knowledge graph over the live
+database with no hand-written mapping:
+
+```bash
+relational-schema-analyzer owl   --source postgresql --url "$DSN" -o ontology.ttl
+relational-schema-analyzer r2rml --source postgresql --url "$DSN" -o mapping.ttl
+```
+
+Each entity becomes an `rr:TriplesMap` over a schema-qualified `rr:logicalTable`, with an
+IRI `rr:template` built from the primary key (tables without one fall back to blank-node
+subjects and are flagged). Foreign keys become referencing object maps with a full
+`rr:joinCondition`, and N:M join tables get their own TriplesMap. R2RML cannot attach
+properties to a relationship, so a join table's non-key attribute columns are reported in
+a comment rather than silently dropped — reify the association if you need them.
 
 Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`,
 plus two **data-catalog** sources (see `docs/DESIGN.md` §9.3.1): `dbt` (a dbt
@@ -93,7 +153,7 @@ dumps and `physicalSchemaFingerprint` values are byte-identical for schemas that
 don't use it.
 
 **MCP server** (optional, `pip install 'relational-schema-analyzer[mcp]'`) exposes the same
-`snapshot` / `analyze` / `owl` operations over the v1 tool contract:
+`snapshot` / `analyze` / `owl` / `r2rml` operations over the v1 tool contract:
 
 ```bash
 relational-schema-analyzer-mcp                                   # stdio (local IDE)
