@@ -66,6 +66,61 @@ class TestOwl:
         assert "@prefix : <http://ex.org/c#> ." in resp["result"]["owl"]["content"]
 
 
+class TestR2rml:
+    def test_turtle(self):
+        resp = run_tool({"operation": "r2rml", "source": _csv_source()})
+        assert resp["ok"] is True
+        assert resp["operation"] == "r2rml"
+        assert resp["result"]["r2rml"]["format"] == "turtle"
+        content = resp["result"]["r2rml"]["content"]
+        assert "a rr:TriplesMap" in content
+        assert "rr:logicalTable" in content
+
+    def test_from_captured_physical(self):
+        snap = run_tool({"operation": "snapshot", "source": _csv_source()})
+        resp = run_tool(
+            {"operation": "r2rml", "input": {"physical": snap["result"]["physical"]}}
+        )
+        assert resp["ok"] is True
+        assert "a rr:TriplesMap" in resp["result"]["r2rml"]["content"]
+
+    def test_iri_overrides(self):
+        resp = run_tool({
+            "operation": "r2rml",
+            "source": _csv_source(),
+            "r2rml": {
+                "iriBase": "http://ex.org/c#",
+                "dataIriBase": "http://ex.org/row/",
+                "mappingIriBase": "http://ex.org/m#",
+            },
+        })
+        content = resp["result"]["r2rml"]["content"]
+        assert "@prefix : <http://ex.org/c#> ." in content
+        assert "@prefix map: <http://ex.org/m#> ." in content
+        assert "http://ex.org/row/" in content
+
+    def test_shares_an_ontology_with_the_owl_operation(self):
+        # Same iriBase in both operations must yield mapping predicates the
+        # ontology actually declares — that pairing is the point of shipping both.
+        rdflib = pytest.importorskip("rdflib")
+        args = {"source": _csv_source()}
+        owl = run_tool({"operation": "owl", **args})["result"]["owl"]["content"]
+        r2rml = run_tool({"operation": "r2rml", **args})["result"]["r2rml"]["content"]
+        og = rdflib.Graph().parse(data=owl, format="turtle")
+        rg = rdflib.Graph().parse(data=r2rml, format="turtle")
+        declared = {
+            s
+            for t in ("Class", "DatatypeProperty", "ObjectProperty")
+            for s in og.subjects(rdflib.RDF.type, rdflib.URIRef(
+                f"http://www.w3.org/2002/07/owl#{t}"))
+        }
+        rr = "http://www.w3.org/ns/r2rml#"
+        used = set(rg.objects(None, rdflib.URIRef(rr + "class"))) | set(
+            rg.objects(None, rdflib.URIRef(rr + "predicate"))
+        )
+        assert used and used <= declared
+
+
 class TestErrors:
     def test_not_a_dict(self):
         resp = run_tool("nope")  # type: ignore[arg-type]

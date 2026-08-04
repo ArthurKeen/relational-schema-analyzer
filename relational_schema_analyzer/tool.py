@@ -1,15 +1,16 @@
 """Programmatic v1 tool-contract entrypoint: ``run_tool(request) -> response``.
 
 A single dict-in / dict-out function that drives the ``snapshot`` / ``analyze`` /
-``owl`` operations. It is the substrate the MCP server (and any non-interactive
-tool caller) wraps, and it is fully testable without the ``mcp`` package.
+``owl`` / ``r2rml`` operations. It is the substrate the MCP server (and any
+non-interactive tool caller) wraps, and it is fully testable without the ``mcp``
+package.
 
 Request shape (relational variant of the shared tool contract):
 
     {
       "contractVersion": "1",
       "requestId": "opt-id",
-      "operation": "snapshot" | "analyze" | "owl",
+      "operation": "snapshot" | "analyze" | "owl" | "r2rml",
       "source": {                       # a live source to introspect ...
         "type": "postgresql|mysql|sqlserver|snowflake|duckdb|databricks|csv",
         "url": "<connection string / DSN / path>",
@@ -17,8 +18,13 @@ Request shape (relational variant of the shared tool contract):
         "params": { ... }               # optional source_params (e.g. csv delimiter)
       },
       "input": { "physical": { ... } }, # ... OR a previously captured PhysicalSchema
-      "owl": { "format": "turtle"|"jsonld", "iriBase": "...", "physIriBase": "..." }
+      "owl": { "format": "turtle"|"jsonld", "iriBase": "...", "physIriBase": "..." },
+      "r2rml": { "iriBase": "...", "dataIriBase": "...", "mappingIriBase": "..." }
     }
+
+``r2rml`` always emits Turtle (R2RML has no other standard serialization); its
+``iriBase`` should match the ``owl`` operation's so the mapping populates the
+ontology that export declares.
 
 Response envelope (aligned with the shared response contract):
 
@@ -33,10 +39,11 @@ from typing import Any
 from .analyzer import RelationalSchemaAnalyzer
 from .connectors import create_connector
 from .owl_export import export_owl_jsonld, export_owl_turtle
+from .r2rml_export import export_r2rml_turtle
 from .types import PhysicalSchema
 
 CONTRACT_VERSION = "1"
-_OPERATIONS = ("snapshot", "analyze", "owl")
+_OPERATIONS = ("snapshot", "analyze", "owl", "r2rml")
 
 
 def _response(request: dict[str, Any], *, ok: bool, **extra: Any) -> dict[str, Any]:
@@ -105,6 +112,26 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
 
         if operation == "analyze":
             return _response(request, ok=True, result={"analysis": analysis.to_bundle()})
+
+        if operation == "r2rml":
+            r2rml_opts = request.get("r2rml") or {}
+            r2rml_kwargs = {}
+            if r2rml_opts.get("iriBase"):
+                r2rml_kwargs["base_iri"] = r2rml_opts["iriBase"]
+            if r2rml_opts.get("dataIriBase"):
+                r2rml_kwargs["data_iri"] = r2rml_opts["dataIriBase"]
+            if r2rml_opts.get("mappingIriBase"):
+                r2rml_kwargs["mapping_iri"] = r2rml_opts["mappingIriBase"]
+            return _response(
+                request,
+                ok=True,
+                result={
+                    "r2rml": {
+                        "format": "turtle",
+                        "content": export_r2rml_turtle(analysis, **r2rml_kwargs),
+                    }
+                },
+            )
 
         # operation == "owl"
         owl_opts = request.get("owl") or {}

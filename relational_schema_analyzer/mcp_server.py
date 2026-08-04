@@ -106,14 +106,14 @@ def build_app(*, host: str | None = None, port: int | None = None) -> Any:
         port=port or DEFAULT_MCP_PORT,
         instructions=(
             "Relational schema analyzer. Use the per-operation tools "
-            "(relational_schema_analyzer_snapshot/analyze/owl) or the generic "
+            "(relational_schema_analyzer_snapshot/analyze/owl/r2rml) or the generic "
             "relational_schema_analyzer_run with a v1 tool-contract request dict."
         ),
     )
 
     @mcp.tool()
     def relational_schema_analyzer_run(request: dict[str, Any]) -> dict[str, Any]:
-        """Execute one operation (snapshot | analyze | owl) from a v1 request dict."""
+        """Execute one operation (snapshot | analyze | owl | r2rml) from a v1 request dict."""
         return run_tool(request)
 
     @mcp.tool()
@@ -149,6 +149,20 @@ def build_app(*, host: str | None = None, port: int | None = None) -> Any:
     ) -> dict[str, Any]:
         """OWL export. ``owl`` = {format: turtle|jsonld, iriBase?, physIriBase?}."""
         return run_tool(_typed_request("owl", source=source, input=input, owl=owl))
+
+    @mcp.tool()
+    def relational_schema_analyzer_r2rml(
+        source: dict[str, Any] | None = None,
+        input: dict[str, Any] | None = None,
+        r2rml: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """R2RML mapping export (Turtle).
+
+        ``r2rml`` = {iriBase?, dataIriBase?, mappingIriBase?}. Pair it with the
+        ``owl`` tool using the same ``iriBase`` to get an ontology plus a mapping
+        that populates it — a virtual knowledge graph over the live database.
+        """
+        return run_tool(_typed_request("r2rml", source=source, input=input, r2rml=r2rml))
 
     return mcp
 

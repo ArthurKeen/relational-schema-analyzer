@@ -8,7 +8,7 @@
   "properties": {
     "contractVersion": { "const": "1" },
     "requestId": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "operation": { "type": "string", "enum": ["analyze", "snapshot", "export", "docs", "owl", "diff", "resolve", "csi"] },
+    "operation": { "type": "string", "enum": ["analyze", "snapshot", "export", "docs", "owl", "r2rml", "diff", "resolve", "csi"] },
 
     "connection": {
       "type": "object",
@@ -235,7 +235,7 @@
       "then": { "required": ["connection"] }
     },
     {
-      "if": { "properties": { "operation": { "enum": ["export", "docs", "owl", "resolve", "csi"] } } },
+      "if": { "properties": { "operation": { "enum": ["export", "docs", "owl", "r2rml", "resolve", "csi"] } } },
       "then": {
         "required": ["input"],
         "properties": {
