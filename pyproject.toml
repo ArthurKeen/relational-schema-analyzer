@@ -30,6 +30,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Class-abstraction discovery. Shared with arangodb-schema-analyzer so the two cannot
+# drift on the sharedProperties/partialProperties split, which decides whether an
+# aggregate over an abstract class silently under-reports.
+taxonomy = ["conceptual-taxonomy>=0.1.1"]
 postgres = ["psycopg[binary]>=3"]
 mysql = ["pymysql>=1"]
 sqlserver = ["pymssql>=2"]
