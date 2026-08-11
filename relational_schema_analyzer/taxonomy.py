@@ -155,11 +155,10 @@ def discover(
         return None
 
     physical = bundle.get("physicalMapping") or {}
-    entity_name_by_table = {
-        mapping.get("tableName"): name
-        for name, mapping in (physical.get("entities") or {}).items()
-        if isinstance(mapping, dict) and mapping.get("tableName")
-    }
+    entity_name_by_table: dict[str, str] = {}
+    for name, mapping in (physical.get("entities") or {}).items():
+        if isinstance(mapping, dict) and isinstance(mapping.get("tableName"), str):
+            entity_name_by_table[mapping["tableName"]] = name
 
     disc_inputs, containment, measurements = build_inputs(
         schema, entity_name_by_table, counter=counter

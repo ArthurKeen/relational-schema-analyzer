@@ -96,6 +96,34 @@ def _datatype_local(entity_name: str, prop_name: str) -> str:
     return f"{_sanitize_iri_local(entity_name)}_{_sanitize_iri_local(prop_name)}"
 
 
+def _subclass_map(cs: dict[str, Any]) -> dict[str, list[str]]:
+    """``{entity: [superclass, ...]}`` from both sources of subsumption.
+
+    ``entity["subClassOf"]`` is the deterministic baseline's single shared-PK inference.
+    ``subClassOfProposals`` carries the richer taxonomy from ``conceptual-taxonomy`` —
+    discriminator values, sibling abstraction, specialization — which can legitimately give
+    a class more than one parent, so this returns a list rather than replacing one scalar
+    with another.
+    """
+    out: dict[str, list[str]] = {}
+
+    def add(sub: Any, sup: Any) -> None:
+        if isinstance(sub, str) and sub and isinstance(sup, str) and sup and sub != sup:
+            supers = out.setdefault(sub, [])
+            if sup not in supers:
+                supers.append(sup)
+
+    for entity in cs.get("entities") or []:
+        if isinstance(entity, dict):
+            add(entity.get("name"), entity.get("subClassOf"))
+
+    for proposal in cs.get("subClassOfProposals") or []:
+        if isinstance(proposal, dict):
+            add(proposal.get("subClass"), proposal.get("superClass"))
+
+    return out
+
+
 def export_owl_turtle(
     analysis: Any,
     *,
@@ -107,6 +135,7 @@ def export_owl_turtle(
     cs = data.get("conceptualSchema") or {}
     pm = data.get("physicalMapping") or {}
     entities = cs.get("entities") or []
+    superclasses = _subclass_map(cs)
     rels = cs.get("relationships") or []
     pm_entities = pm.get("entities") if isinstance(pm.get("entities"), dict) else {}
     pm_rels = pm.get("relationships") if isinstance(pm.get("relationships"), dict) else {}
@@ -137,8 +166,8 @@ def export_owl_turtle(
         iri = f":{_sanitize_iri_local(name)}"
         lines.append(f"{iri} a owl:Class ;")
         lines.append(f'  rdfs:label "{_ttl_escape(name)}" .')
-        if isinstance(e.get("subClassOf"), str) and e["subClassOf"]:
-            lines.append(f"{iri} rdfs:subClassOf :{_sanitize_iri_local(e['subClassOf'])} .")
+        for superclass in superclasses.get(name, []):
+            lines.append(f"{iri} rdfs:subClassOf :{_sanitize_iri_local(superclass)} .")
 
         mapping = pm_entities.get(name) if isinstance(pm_entities, dict) else None
         pm_props = mapping.get("properties") if isinstance(mapping, dict) else {}
@@ -248,9 +277,7 @@ def _object_property_lines(r: dict[str, Any], mapping: dict[str, Any] | None) ->
     if isinstance(mapping, dict):
         if mapping.get("style"):
             out.append(f'{iri} phys:mappingStyle "{_ttl_escape(str(mapping["style"]))}" .')
-        for key, phys in (
-            ("joinTable", "joinTable"),
-        ):
+        for key, phys in (("joinTable", "joinTable"),):
             if mapping.get(key):
                 out.append(f'{iri} phys:{phys} "{_ttl_escape(str(mapping[key]))}" .')
         if mapping.get("fromTable"):
@@ -284,6 +311,7 @@ def export_owl_jsonld(
     cs = data.get("conceptualSchema") or {}
     pm = data.get("physicalMapping") or {}
     entities = cs.get("entities") or []
+    superclasses = _subclass_map(cs)
     rels = cs.get("relationships") or []
     pm_entities = pm.get("entities") if isinstance(pm.get("entities"), dict) else {}
     pm_rels = pm.get("relationships") if isinstance(pm.get("relationships"), dict) else {}
@@ -299,8 +327,11 @@ def export_owl_jsonld(
             "@type": "owl:Class",
             "rdfs:label": name,
         }
-        if isinstance(e.get("subClassOf"), str) and e["subClassOf"]:
-            node["rdfs:subClassOf"] = {"@id": _sanitize_iri_local(e["subClassOf"])}
+        supers = superclasses.get(name, [])
+        if len(supers) == 1:
+            node["rdfs:subClassOf"] = {"@id": _sanitize_iri_local(supers[0])}
+        elif supers:
+            node["rdfs:subClassOf"] = [{"@id": _sanitize_iri_local(s)} for s in supers]
         mapping = pm_entities.get(name) if isinstance(pm_entities, dict) else None
         if isinstance(mapping, dict):
             if mapping.get("style"):
