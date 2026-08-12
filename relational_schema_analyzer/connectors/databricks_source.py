@@ -139,6 +139,11 @@ class DatabricksConnector:
             f"SELECT table_name, table_type, comment FROM {info}.tables "
             f"WHERE table_schema = '{schema}' ORDER BY table_name",
         ):
+            # Unity Catalog's table_type vocabulary is VIEW, FOREIGN, MANAGED,
+            # STREAMING_TABLE, MATERIALIZED_VIEW, EXTERNAL, MANAGED_SHALLOW_CLONE
+            # and EXTERNAL_SHALLOW_CLONE — note it never emits ANSI's "BASE
+            # TABLE". Only the two view kinds are query-defined; FOREIGN
+            # (federated) and the clones are ordinary tables.
             result.tables[name] = self._build_table(
                 table_name=name,
                 is_view=(str(table_type).upper() in ("VIEW", "MATERIALIZED_VIEW")),
@@ -168,12 +173,22 @@ class DatabricksConnector:
     def _columns_by_table(
         self, cur: Any, info: str, schema: str
     ) -> dict[str, list[dict[str, Any]]]:
-        rows = self._rows(
-            cur,
-            "SELECT table_name, column_name, data_type, is_nullable, column_default, "
+        # ``full_data_type`` is "the data type as specified in the column
+        # definition"; ``data_type`` is only "the simple data type name of the
+        # column, or STRUCT, or ARRAY". Selecting the latter silently drops
+        # precision and scale (``decimal(10,2)`` → ``decimal``) and every element
+        # / field type (``array<string>`` → ``array``), so prefer the full form.
+        # The type map normalizes both to the same category, so this only ever
+        # adds detail. Older catalogs that predate the column fall back.
+        select = (
+            "SELECT table_name, column_name, {type_expr}, is_nullable, column_default, "
             f"ordinal_position, comment FROM {info}.columns "
-            f"WHERE table_schema = '{schema}' ORDER BY table_name, ordinal_position",
+            f"WHERE table_schema = '{schema}' ORDER BY table_name, ordinal_position"
         )
+        try:
+            rows = self._rows(cur, select.format(type_expr="full_data_type"))
+        except Exception:  # noqa: BLE001 - fall back when only data_type exists
+            rows = self._rows(cur, select.format(type_expr="data_type"))
         out: dict[str, list[dict[str, Any]]] = {}
         for table_name, name, data_type, is_nullable, default, ordinal, comment in rows:
             out.setdefault(table_name, []).append(
