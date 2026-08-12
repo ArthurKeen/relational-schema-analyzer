@@ -1,5 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+# Pinned below 1.32: that release emits ``Metadata-Version: 2.5``, which the
+# current twine (6.2.0 / packaging 26.2) rejects with "not a valid metadata
+# version" — so the artifact cannot be validated or confidently uploaded.
+# 1.31.0 and earlier emit 2.4, which the whole toolchain accepts. Lift the pin
+# once twine and PyPI handle 2.5.
+requires = ["hatchling<1.32"]
 build-backend = "hatchling.build"
 
 [project]
