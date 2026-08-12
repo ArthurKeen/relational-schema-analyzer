@@ -34,12 +34,14 @@ flowchart TD
 
 ## Status
 
-Active development — **v0.5.0 on [PyPI](https://pypi.org/project/relational-schema-analyzer/)**
+Active development — **v0.6.0 on [PyPI](https://pypi.org/project/relational-schema-analyzer/)**
 (`pip install relational-schema-analyzer`). All core phases (0–5) are implemented: the
 physical core (connectors, types, FK inference) extracted from `r2g`; a deterministic
 conceptual baseline that emits a contract-valid `{conceptualSchema, physicalMapping, metadata}`
-bundle with no LLM; OWL (Turtle / JSON-LD) and R2RML exports and a CLI; optional, additive LLM
-refinement; and the v1 tool-contract entrypoint + MCP server. Two data-catalog sources
+bundle with no LLM; OWL (Turtle / JSON-LD) and R2RML exports and a CLI; class-abstraction
+discovery (type discriminators + taxonomy) via the shared `conceptual-taxonomy`
+library; optional, additive LLM refinement; and the v1 tool-contract entrypoint +
+MCP server. Two data-catalog sources
 (`dbt`, `osi`) ship alongside the seven live/file sources. Remaining work is the live Docker
 introspection corpus and the downstream `r2g` / `arango-ontoextract` integration PRs.
 
@@ -94,6 +96,22 @@ See:
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, data model, tool contract, OWL mapping
 - [`docs/IMPLEMENTATION-PLAN.md`](docs/IMPLEMENTATION-PLAN.md) — phased delivery plan & extraction inventory
+- [`docs/DESIGN-ADDENDUM-taxonomy.md`](docs/DESIGN-ADDENDUM-taxonomy.md) — class-abstraction discovery
+
+**Class abstractions (0.6.0).** Beyond the baseline's shared-PK `subClassOf`
+inference, RSA discovers type-discriminator columns and hands the assembled
+inputs to [`conceptual-taxonomy`](https://pypi.org/project/conceptual-taxonomy/) —
+the same library the ArangoDB analyzer uses, so both paradigms yield the same
+taxonomy. Discriminators come from declared `CHECK (col IN (…))` constraints
+(exact, no database access) or, opt-in behind an injected enumerator, from
+bounded sampling of name-affine columns. Relationally, class-table inheritance
+is *declared* rather than measured — a child table whose primary key is also a
+foreign key to its parent says so in the constraint — so containment needs no
+probe budget. The library's edges arrive as `subClassOfProposals` carrying
+mechanism, confidence, and evidence alongside the baseline's scalar
+`subClassOf`, so consumers arbitrate instead of being handed a verdict. Both
+OWL serializations emit every discovered parent. Needs the extra:
+`pip install 'relational-schema-analyzer[taxonomy]'`.
 
 ```python
 from relational_schema_analyzer import (
