@@ -18,6 +18,12 @@ from __future__ import annotations
 __version__ = "0.6.0"
 
 from .analyzer import Analysis, RelationalSchemaAnalyzer
+from .discriminator import DiscriminatorCandidate, DiscriminatorOptions, detect_discriminators
+from .samplers import (
+    executor_from_connection,
+    make_specialization_counter,
+    make_value_enumerator,
+)
 from .conceptual import ConceptualSchema
 from .connectors import (
     SUPPORTED_SOURCE_TYPES,
@@ -78,6 +84,12 @@ __all__ = [
     "create_value_sampler",
     # Phase 2 — conceptual model + baseline
     "RelationalSchemaAnalyzer",
+    "DiscriminatorCandidate",
+    "DiscriminatorOptions",
+    "detect_discriminators",
+    "executor_from_connection",
+    "make_specialization_counter",
+    "make_value_enumerator",
     "Analysis",
     "ConceptualSchema",
     "PhysicalMapping",
