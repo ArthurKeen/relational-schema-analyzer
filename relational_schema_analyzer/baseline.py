@@ -28,6 +28,7 @@ from typing import Any
 
 from .fk_inference import infer_foreign_keys
 from .naming import convert_identifier
+from .overlay import overlay_applied, overlay_summary
 from .typemap import pg_type_to_json_type
 from .types import ForeignKey, PhysicalSchema, Table
 
@@ -214,6 +215,28 @@ def infer_baseline(schema: PhysicalSchema) -> dict[str, Any]:
         # Surfaced as a pattern rather than a review flag — a well-modelled
         # lakehouse schema shouldn't lose confidence purely for its dialect.
         _add_pattern("unenforced_foreign_keys")
+
+    if overlay_applied(schema):
+        # Keys asserted by a human via a declared-key overlay rather than read from the
+        # catalog (see ``overlay.py``). Recorded so a consumer can tell the three
+        # provenances apart — declared, overlaid, inferred — but deliberately *not*
+        # review-flagged: someone reviewed these by writing them down, which is more than
+        # an inferred FK can claim.
+        _add_pattern("overlay_declared_keys")
+        counts = overlay_summary(schema)
+        supplied = ", ".join(
+            f"{counts[key]} {label}"
+            for key, label in (
+                ("primaryKeys", "primary key(s)"),
+                ("foreignKeys", "foreign key(s)"),
+                ("uniqueConstraints", "unique constraint(s)"),
+            )
+            if counts[key]
+        )
+        assumptions.append(
+            f"{supplied} on {counts['tables']} table(s) were supplied by a declared-key "
+            f"overlay (asserted by a human, not read from the source catalog)."
+        )
 
     # Join tables → N:M relationships.
     for table_name in sorted(join_tables):

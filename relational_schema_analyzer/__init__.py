@@ -40,6 +40,13 @@ from .fk_inference import (
 from .exports import export_bundle
 from .mapping import PhysicalMapping
 from .metadata import fingerprint_physical_schema
+from .overlay import (
+    OverlayError,
+    apply_key_overlay,
+    load_key_overlay,
+    overlay_applied,
+    overlay_summary,
+)
 from .providers import list_providers, register_provider
 from .owl_export import export_owl_jsonld, export_owl_turtle
 from .r2rml_export import (
@@ -82,6 +89,12 @@ __all__ = [
     "InferredForeignKey",
     "InferenceOptions",
     "create_value_sampler",
+    # Declared-key overlay (for sources whose catalog declares no keys)
+    "apply_key_overlay",
+    "load_key_overlay",
+    "overlay_applied",
+    "overlay_summary",
+    "OverlayError",
     # Phase 2 — conceptual model + baseline
     "RelationalSchemaAnalyzer",
     "DiscriminatorCandidate",

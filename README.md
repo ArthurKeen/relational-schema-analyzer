@@ -162,6 +162,42 @@ constraints, `relationships` → FKs; OSI carries no column types, so types degr
 `temporal` for `is_time` fields and `string` otherwise). The `osi` source needs
 PyYAML: `pip install 'relational-schema-analyzer[osi]'`.
 
+**Declared-key overlay.** Some sources describe their tables faithfully and their *keys* not
+at all — BigQuery's public datasets declare no primary or foreign keys, and AWS Glue, Hive
+Metastore and Iceberg have no constraint vocabulary to declare them with. That is fatal
+downstream, because FK inference anchors its candidate targets on declared primary keys: no
+PKs means no relationships, and a conceptual schema of isolated entities. An overlay is where
+the human who knows the keys writes them down:
+
+```bash
+relational-schema-analyzer analyze --source bigquery --url "$DSN" --overlay keys.overlay.json
+```
+
+```json
+{
+  "version": 1,
+  "tables": {
+    "events": { "primaryKey": ["GLOBALEVENTID"] },
+    "eventmentions": {
+      "foreignKeys": [
+        { "columns": ["GLOBALEVENTID"],
+          "references": { "table": "events", "columns": ["GLOBALEVENTID"] },
+          "comment": "GDELT codebook: mentions reference their event" }
+      ]
+    }
+  }
+}
+```
+
+Three rules make it an artifact rather than a hack. **The catalog always wins** — an overlay
+fills gaps and never overrides a constraint the source declared. **Overlay keys are labelled,
+not laundered** — every FK carries `enforced=False` and an `overlay:`-prefixed constraint name,
+and the bundle reports an `overlay_declared_keys` pattern, so a consumer can always tell
+catalog-declared from human-declared from inferred. **A typo fails loudly** — unknown tables,
+unknown columns and misspelled keys are errors, because an overlay that silently does nothing
+is worse than none at all. `--overlay` works on every subcommand, with a live source or
+`--from-snapshot`; YAML overlays need PyYAML.
+
 **Consumer metadata passthrough (0.2.0).** `Column` and `Table` carry an optional
 `extra: dict` that the analyzer never reads or interprets — it only guarantees the
 data survives serialization round-trips. This lets a consumer (e.g. `r2g`'s Phase-9

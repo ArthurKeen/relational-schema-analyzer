@@ -9,6 +9,9 @@ physical.json``), then emits JSON / OWL to a file or stdout.
     relational-schema-analyzer analyze  --from-snapshot physical.json --pretty
     relational-schema-analyzer owl      --source postgresql --url ... --format turtle
     relational-schema-analyzer r2rml    --source postgresql --url ...
+
+``--overlay keys.json`` may be added to any of them to merge human-declared keys into a
+schema whose source declares none (see ``overlay.py``).
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from .owl_export import (
     export_owl_jsonld,
     export_owl_turtle,
 )
+from .overlay import OverlayError, apply_key_overlay, load_key_overlay
 from .types import PhysicalSchema
 
 
@@ -54,6 +58,14 @@ def _add_source_args(p: argparse.ArgumentParser) -> None:
         metavar="FILE",
         help="Load a previously captured physical.json instead of introspecting a live source",
     )
+    p.add_argument(
+        "--overlay",
+        metavar="FILE",
+        help=(
+            "Merge human-declared primary/foreign/unique keys from a JSON or YAML overlay "
+            "(for sources whose catalog declares none, e.g. BigQuery, Glue, Hive)"
+        ),
+    )
 
 
 def _add_output_args(p: argparse.ArgumentParser) -> None:
@@ -62,6 +74,19 @@ def _add_output_args(p: argparse.ArgumentParser) -> None:
 
 
 def _load_physical(args: argparse.Namespace) -> PhysicalSchema:
+    physical = _introspect(args)
+    # Applied last, and identically for live and captured schemas: an overlay describes the
+    # *schema*, not how it was obtained, so `snapshot --overlay` and
+    # `analyze --from-snapshot --overlay` must agree.
+    if getattr(args, "overlay", None):
+        try:
+            physical = apply_key_overlay(physical, load_key_overlay(args.overlay))
+        except OverlayError as err:
+            raise SystemExit(f"error: {err}") from err
+    return physical
+
+
+def _introspect(args: argparse.Namespace) -> PhysicalSchema:
     if args.from_snapshot:
         return PhysicalSchema.load_from_file(args.from_snapshot)
     if not args.source or not args.url:

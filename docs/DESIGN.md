@@ -432,6 +432,18 @@ cleanly. Priority order by fit:
 5. Enterprise catalogs (DataHub / Atlas / OpenMetadata / Collibra) — REST, on demand.
    (Unity Catalog is already covered via the Databricks connector.)
 
+**Constraint-poor sources need a key seed.** Items 3 and 4 above — and BigQuery, whose public
+datasets declare nothing even though the dialect supports constraints — yield tables and types
+but no keys. That is fatal to the conceptual layer rather than merely lossy: `fk_inference`
+indexes candidate *targets* by declared primary key, so a schema with no PKs produces no
+relationships at all. The answer is a **declared-key overlay** (`overlay.py`,
+`--overlay FILE`): human-supplied PK/FK/UNIQUE merged onto a `PhysicalSchema`, where the
+catalog always wins, overlay keys stay labelled (`enforced=False`, `overlay:`-prefixed
+constraint names, an `overlay_declared_keys` pattern) so consumers can distinguish declared
+from overlaid from inferred, and a typo is an error rather than a silent no-op. It is
+source-agnostic by design — the same file format serves Glue, Hive, Iceberg and BigQuery. See
+[`DESIGN-ADDENDUM-bigquery.md`](DESIGN-ADDENDUM-bigquery.md) D4 for the full rationale.
+
 **Out of scope — Kafka / event schemas.** "Kafka as a source" means the Schema Registry
 (Avro / Protobuf / JSON Schema), which is a poor fit: no relational constraints (PK/FK/
 unique/CHECK are absent), nested/union/map types don't map onto the scalar `Column` model
