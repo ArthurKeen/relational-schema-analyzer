@@ -148,10 +148,17 @@ B2 untestable:
 `gdelt_fallback` only on a failed access check. DDL and load recipe:
 [`IMPLEMENTATION-PLAN-bigquery.md`](IMPLEMENTATION-PLAN-bigquery.md) Slice 0.
 
-**Q4 — Release shape → a single v0.7.0 after M5.** `pyproject.toml` stays at 0.6.0 through the
-demo; the demo runs from a git checkout / editable install, which needs no release. Cutting a
-connector-only 0.7.0 at M3 would publish the one configuration we most want nobody to build on —
-BigQuery support with the cost governor still missing.
+**Q4 — Release shape → one release, after M5.** The demo runs from a git checkout / editable
+install, which needs no release. Cutting a connector-only release at M3 would publish the one
+configuration we most want nobody to build on — BigQuery support with the cost governor still
+missing.
+
+> **Revised 2026-08-19.** The version was to be v0.7.0. It is now **v0.8.0**: 0.7.0 shipped
+> ahead of BigQuery, carrying the declared-key overlay (Slice 4) and the taxonomy injected
+> seams. Waiting for BigQuery would have held two finished, unrelated features behind a
+> milestone blocked on credentials — and AOE, the consumer that most needs the overlay, could
+> not use it until it was on PyPI. The principle above is unchanged and still binds v0.8.0:
+> no BigQuery release without the cost governor.
 
 ### M0 prerequisites — owner: Arthur, blocking everything
 

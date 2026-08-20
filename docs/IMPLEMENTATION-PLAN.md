@@ -276,8 +276,22 @@ projection — the whole core (Phases 0–5) landed together in the first releas
 - **v0.3.0** — physical-model enrichment for the AOE contract + the source-scope ADR
   (DESIGN §9.3.1) and the first data-catalog source: **dbt** (`manifest.json`).
 - **v0.4.0** — second data-catalog source: **OSI** (`*.osi.yaml`).
+- **v0.5.0** — tagged locally, **never published**; its contents shipped in v0.6.0.
+- **v0.6.0** — **R2RML** export (CLI + tool contract + MCP), `ForeignKey.enforced` (unenforced
+  constraints as evidence, not proof), `DatabricksValueSampler`, class-abstraction discovery
+  (type-discriminator detection + `conceptual-taxonomy` integration, emitted as
+  `subClassOfProposals`), physical-mapping `schema` qualification and join-table parent columns,
+  and Databricks `full_data_type` (precision/scale were being discarded).
+- **v0.7.0** — the **declared-key overlay** (`overlay.py`, `--overlay FILE`): human-supplied
+  PK/FK/UNIQUE merged onto a `PhysicalSchema` for sources whose catalog declares none, with the
+  catalog always winning, overlay keys labelled rather than laundered, and typos failing loudly.
+  Plus the **injected seams** (`samplers.py`) that make taxonomy discovery reachable — before
+  them, discriminator detection ran only on declared CHECK constraints and specialization
+  constraints were always `null`.
 
 Planned next:
 
-- **v0.5.0** — live Docker introspection corpus (Pagila / Chinook / Northwind) + the
-  downstream `r2g` and `arango-ontoextract` integration PRs; shared contract package.
+- **v0.8.0** — the **BigQuery** connector with its cost governor (see
+  [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
+  Northwind); the downstream `r2g` and `arango-ontoextract` integration PRs; shared contract
+  package.
