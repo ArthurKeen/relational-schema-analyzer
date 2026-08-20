@@ -1,0 +1,641 @@
+<title>Your Database Already Knows What It Means</title>
+
+<style>
+  /* ── Tokens: complete light palette on bare :root ─────────────────── */
+  :root {
+    --paper:      #F6F7F9;
+    --surface:    #FFFFFF;
+    --surface-2:  #EDEFF3;
+    --ink:        #141A24;
+    --ink-soft:   #4A5568;
+    --ink-faint:  #7C8798;
+    --rule:       #D6DAE2;
+
+    /* The thesis, as a palette: three ways of knowing something. */
+    --declared:   #1F3A5F;   /* the catalog asserts it */
+    --overlaid:   #2F6E63;   /* a human asserts it */
+    --inferred:   #B4780F;   /* the tool derived it, with confidence */
+
+    --declared-bg: #E4E9F1;
+    --overlaid-bg: #E1EDEA;
+    --inferred-bg: #F6EEDC;
+
+    --accent:     var(--declared);
+    --code-bg:    #EDEFF3;
+
+    --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --sans:  -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono:  ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0E1420;
+      --surface:    #151C2A;
+      --surface-2:  #1C2536;
+      --ink:        #E8EBF0;
+      --ink-soft:   #A8B2C3;
+      --ink-faint:  #6E7A8D;
+      --rule:       #2A3446;
+
+      --declared:   #8FB3E0;
+      --overlaid:   #6FC4B4;
+      --inferred:   #E5B25C;
+
+      --declared-bg: #1B2740;
+      --overlaid-bg: #17322D;
+      --inferred-bg: #33280F;
+
+      --code-bg:    #1A2231;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0E1420;
+    --surface:    #151C2A;
+    --surface-2:  #1C2536;
+    --ink:        #E8EBF0;
+    --ink-soft:   #A8B2C3;
+    --ink-faint:  #6E7A8D;
+    --rule:       #2A3446;
+
+    --declared:   #8FB3E0;
+    --overlaid:   #6FC4B4;
+    --inferred:   #E5B25C;
+
+    --declared-bg: #1B2740;
+    --overlaid-bg: #17322D;
+    --inferred-bg: #33280F;
+
+    --code-bg:    #1A2231;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .deck {
+    scroll-snap-type: y mandatory;
+    overflow-y: auto;
+    height: 100dvh;
+    scroll-behavior: smooth;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .deck { scroll-behavior: auto; }
+  }
+
+  .slide {
+    scroll-snap-align: start;
+    min-height: 100dvh;
+    display: grid;
+    grid-template-columns: 4.5rem 1fr;
+    align-content: center;
+    padding: 4rem 2.5rem 5rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  @media (max-width: 700px) {
+    .slide { grid-template-columns: 2.5rem 1fr; padding: 3rem 1.25rem 4rem; }
+  }
+
+  /* The left rule: slide index in the subject's own vernacular — monospace. */
+  .rail {
+    border-left: 2px solid var(--accent);
+    padding-left: .75rem;
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .08em;
+    color: var(--ink-faint);
+    align-self: stretch;
+    padding-top: .4rem;
+  }
+
+  .body { max-width: 62ch; display: flex; flex-direction: column; gap: 1.15rem; }
+  .body.wide { max-width: 78ch; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(2.4rem, 6vw, 4.2rem);
+    line-height: 1.04;
+    font-weight: 600;
+    margin: 0;
+    text-wrap: balance;
+    letter-spacing: -0.015em;
+  }
+  h2 {
+    font-family: var(--serif);
+    font-size: clamp(1.75rem, 3.6vw, 2.7rem);
+    line-height: 1.12;
+    font-weight: 600;
+    margin: 0;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: .95rem;
+    font-weight: 650;
+    margin: 0;
+    letter-spacing: .005em;
+  }
+  p { margin: 0; font-size: clamp(1rem, 1.5vw, 1.15rem); color: var(--ink-soft); }
+  p.lead { font-size: clamp(1.1rem, 1.9vw, 1.4rem); color: var(--ink); }
+  strong { color: var(--ink); font-weight: 650; }
+
+  ul { margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .6rem; }
+  li { font-size: clamp(.98rem, 1.4vw, 1.1rem); color: var(--ink-soft); }
+  li::marker { color: var(--ink-faint); }
+
+  code, pre { font-family: var(--mono); }
+  code { font-size: .88em; background: var(--code-bg); padding: .1em .35em; border-radius: 3px; }
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-size: clamp(.74rem, 1.05vw, .85rem);
+    line-height: 1.6;
+    color: var(--ink);
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* Status chips — the tri-colour system, used consistently throughout. */
+  .chip {
+    display: inline-flex; align-items: center; gap: .4rem;
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .06em;
+    text-transform: uppercase; padding: .22rem .5rem; border-radius: 3px;
+    white-space: nowrap;
+  }
+  .chip::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
+  .chip-declared { color: var(--declared); background: var(--declared-bg); }
+  .chip-overlaid { color: var(--overlaid); background: var(--overlaid-bg); }
+  .chip-inferred { color: var(--inferred); background: var(--inferred-bg); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .9rem; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 1rem 1.1rem;
+    display: flex; flex-direction: column; gap: .5rem;
+  }
+  .card p { font-size: .95rem; }
+  .card-declared { border-top: 3px solid var(--declared); }
+  .card-overlaid { border-top: 3px solid var(--overlaid); }
+  .card-inferred { border-top: 3px solid var(--inferred); }
+
+  /* Pipeline: stages carry real sequence, so numbering them is honest. */
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: .5rem; }
+  .stage {
+    flex: 1 1 130px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .7rem .8rem;
+    display: flex; flex-direction: column; gap: .25rem;
+  }
+  .stage .n { font-family: var(--mono); font-size: .65rem; color: var(--ink-faint); letter-spacing: .1em; }
+  .stage .t { font-weight: 650; font-size: .9rem; }
+  .stage .d { font-size: .8rem; color: var(--ink-soft); }
+  .stage-out { border-color: var(--accent); }
+
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); }
+  th { font-family: var(--mono); font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; }
+  td { color: var(--ink-soft); }
+  td:first-child { color: var(--ink); font-family: var(--mono); font-size: .84rem; }
+  .scroller { overflow-x: auto; }
+
+  .kicker {
+    border-left: 3px solid var(--accent);
+    padding-left: 1rem;
+    font-family: var(--serif);
+    font-size: clamp(1.1rem, 1.9vw, 1.35rem);
+    color: var(--ink);
+    font-style: italic;
+  }
+
+  /* Progress + nav */
+  .progress {
+    position: fixed; top: 0; left: 0; height: 2px; background: var(--accent);
+    width: 0%; z-index: 10; transition: width .15s linear;
+  }
+  @media (prefers-reduced-motion: reduce) { .progress { transition: none; } }
+  .counter {
+    position: fixed; bottom: 1rem; right: 1.25rem; z-index: 10;
+    font-family: var(--mono); font-size: .72rem; color: var(--ink-faint);
+    background: var(--surface); border: 1px solid var(--rule);
+    padding: .3rem .55rem; border-radius: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .hint {
+    position: fixed; bottom: 1rem; left: 1.25rem; z-index: 10;
+    font-family: var(--mono); font-size: .68rem; color: var(--ink-faint);
+  }
+  @media (max-width: 700px) { .hint { display: none; } }
+
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+</style>
+
+<div class="progress" id="progress"></div>
+<div class="deck" id="deck">
+
+  <!-- 01 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">01</div>
+    <div class="body">
+      <div class="eyebrow">relational-schema-analyzer &nbsp;·&nbsp; Apache-2.0</div>
+      <h1>Your database already knows what it means</h1>
+      <p class="lead">Most of an ontology is sitting in your schema. You can extract it
+      without a language model — and there are good reasons to.</p>
+      <div style="display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.5rem;">
+        <span class="chip chip-declared">declared</span>
+        <span class="chip chip-overlaid">overlaid</span>
+        <span class="chip chip-inferred">inferred</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">02</div>
+    <div class="body">
+      <div class="eyebrow">The question</div>
+      <h2>Someone hands you 200 tables and asks what the data <em>means</em></h2>
+      <p>Not what columns exist — the catalog answers that. They mean the other thing:</p>
+      <ul>
+        <li>Which tables are real concepts, and which are plumbing?</li>
+        <li>When <code>orders.customer_id</code> points at <code>customers.id</code>, what is that relationship called?</li>
+        <li>Does one customer have many orders, or exactly one?</li>
+      </ul>
+      <p>Every technique for making enterprise data useful to AI — knowledge graphs,
+      retrieval over structured data, semantic layers, agents that query a warehouse — needs
+      a model of <strong>meaning</strong>, not a model of storage.</p>
+    </div>
+  </section>
+
+  <!-- 03 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">03</div>
+    <div class="body wide">
+      <div class="eyebrow">The usual options</div>
+      <h2>Both well-trodden routes are bad</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>Model it by hand</h3>
+          <p>An architect and a domain expert, table by table. It works. It takes months,
+          costs a fortune, and goes stale the moment someone ships a migration.</p>
+        </div>
+        <div class="card">
+          <h3>Ask a language model</h3>
+          <p>Fluent, well-organised, and confidently includes relationships that do not exist.</p>
+        </div>
+      </div>
+      <p class="kicker">The failure mode isn't that the model is wrong. It's that wrong and
+      right look identical in the output — and telling them apart means doing the manual work
+      you were trying to skip.</p>
+    </div>
+  </section>
+
+  <!-- 04 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">04</div>
+    <div class="body wide">
+      <div class="eyebrow">The overlooked third option</div>
+      <h2>A schema is already full of declarations about meaning</h2>
+      <p>Made deliberately, by a human — then ignored by most tools that read it.</p>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Declaration</th><th>What it actually asserts</th></tr></thead>
+          <tbody>
+            <tr><td>PRIMARY KEY</td><td>Identity — what makes a row <em>that thing</em></td></tr>
+            <tr><td>FOREIGN KEY</td><td>A relationship, including its direction</td></tr>
+            <tr><td>UNIQUE on an FK</td><td>Cardinality — the difference between 1:1 and 1:N</td></tr>
+            <tr><td>CHECK (x IN …)</td><td>The permitted states of a concept</td></tr>
+            <tr><td>COMMENT</td><td>Documentation written for exactly this purpose</td></tr>
+            <tr><td>junction table</td><td>A many-to-many relationship — <em>not</em> an entity</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>None of this requires inference. It requires <strong>reading</strong>. Commit to
+      reading it properly and much of the conceptual model falls out deterministically:
+      same input, same output, every time.</p>
+    </div>
+  </section>
+
+  <!-- 05 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">05</div>
+    <div class="body wide">
+      <div class="eyebrow">What it produces</div>
+      <h2>Three artifacts, and every concept traces home</h2>
+      <div class="cards">
+        <div class="card card-declared">
+          <h3>Physical schema</h3>
+          <p>A faithful record of the source: tables, typed columns, keys, constraints,
+          indexes, comments, provenance.</p>
+        </div>
+        <div class="card card-declared">
+          <h3>Conceptual model</h3>
+          <p>Classes, relationships with cardinality, properties, class hierarchies —
+          what the data <em>means</em>.</p>
+        </div>
+        <div class="card card-declared">
+          <h3>Mapping</h3>
+          <p>The back-reference. Every class and property points at the exact table,
+          column or constraint it came from.</p>
+        </div>
+      </div>
+      <p>Exports are W3C standards, not a proprietary format: <strong>OWL</strong> for the
+      ontology, <strong>R2RML</strong> for the mapping.</p>
+    </div>
+  </section>
+
+  <!-- 06 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">06</div>
+    <div class="body wide">
+      <div class="eyebrow">The pipeline</div>
+      <h2>Read, derive, export</h2>
+      <div class="flow">
+        <div class="stage"><span class="n">01</span><span class="t">Source</span><span class="d">9 connectors, one interface</span></div>
+        <div class="stage"><span class="n">02</span><span class="t">Physical</span><span class="d">catalog introspection</span></div>
+        <div class="stage"><span class="n">03</span><span class="t">Baseline</span><span class="d">deterministic rules</span></div>
+        <div class="stage"><span class="n">04</span><span class="t">Conceptual</span><span class="d">classes + relationships</span></div>
+        <div class="stage stage-out"><span class="n">05</span><span class="t">Export</span><span class="d">OWL · R2RML · JSON</span></div>
+      </div>
+      <p>An optional language-model pass sits <em>beside</em> step 03, refining names and
+      flagging judgment calls. It is never required, and it never invents structure.</p>
+    </div>
+  </section>
+
+  <!-- 07 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">07</div>
+    <div class="body wide">
+      <div class="eyebrow">Worked example · the worst case</div>
+      <h2>Four CSV files — no keys, no constraints, no comments</h2>
+      <pre><code>$ relational-schema-analyzer analyze --source csv --url ./library
+
+ENTITIES:  Authors · Books · Loans · Members
+
+Books → Authors    1:N
+Loans → Books      1:N
+Loans → Members    1:N</code></pre>
+      <p>That is the right answer, recovered from column names and type compatibility
+      alone. But the answer is not the interesting part.</p>
+    </div>
+  </section>
+
+  <!-- 08 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">08</div>
+    <div class="body wide">
+      <div class="eyebrow">Calibration is the feature</div>
+      <h2>It got the right answer and told you not to trust it</h2>
+      <pre><code>"confidence": 0.64,
+"reviewRequired": true,
+"detectedPatterns": ["inferred_foreign_keys"],
+"assumptions": [
+  "No foreign keys were declared; 3 relationship(s) were
+   inferred from naming heuristics (review)."
+]</code></pre>
+      <p>Give the same schema to PostgreSQL <em>with</em> the foreign keys declared and the
+      relationships come back unflagged at high confidence — because now the database is
+      the witness.</p>
+      <p class="kicker">A tool that produces an ontology should say which parts it read,
+      which it guessed, and how sure it is about the guesses.</p>
+    </div>
+  </section>
+
+  <!-- 09 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">09</div>
+    <div class="body wide">
+      <div class="eyebrow">The core idea</div>
+      <h2>Three ways to know something — never blended</h2>
+      <div class="cards">
+        <div class="card card-declared">
+          <span class="chip chip-declared">declared</span>
+          <p>The source catalog asserts it. Highest trust, no inference.</p>
+        </div>
+        <div class="card card-overlaid">
+          <span class="chip chip-overlaid">overlaid</span>
+          <p>A human wrote it down, in version control, with a reason.</p>
+        </div>
+        <div class="card card-inferred">
+          <span class="chip chip-inferred">inferred</span>
+          <p>Derived from naming, types, and optional value sampling. Scored and flagged.</p>
+        </div>
+      </div>
+      <p>The interesting engineering in a tool like this is rarely the inference. It is the
+      <strong>bookkeeping about how much you know</strong> — and resisting the urge to flatten
+      three epistemic states into one confident-looking answer.</p>
+    </div>
+  </section>
+
+  <!-- 10 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">10</div>
+    <div class="body wide">
+      <div class="eyebrow">Where the third status came from</div>
+      <h2>Some catalogs know nothing at all</h2>
+      <p>Pointed at a large public news-event dataset on a cloud warehouse, the extraction
+      produced completely disconnected classes. The dataset declares no primary keys and no
+      foreign keys — public datasets rarely bother. Correct, and useless.</p>
+      <p>The fix was not to guess harder. It was to let a human supply what the catalog lacks:</p>
+      <pre><code>{ "tables": {
+    "events": { "primaryKey": ["GLOBALEVENTID"] },
+    "eventmentions": { "foreignKeys": [{
+        "columns": ["GLOBALEVENTID"],
+        "references": { "table": "events", "columns": ["GLOBALEVENTID"] },
+        "comment": "codebook: mentions reference their event" }] } } }</code></pre>
+      <ul>
+        <li><strong>The catalog always wins.</strong> An overlay fills gaps; it never overrides the database.</li>
+        <li><strong>Labelled, not laundered.</strong> Human-asserted keys stay marked as such, forever.</li>
+        <li><strong>A typo fails loudly.</strong> Silent no-ops surface as an empty ontology three steps later.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 11 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">11</div>
+    <div class="body wide">
+      <div class="eyebrow">The stance</div>
+      <h2>Deterministic first. The model works on the residue.</h2>
+      <p>This is not an argument that language models are useless here. They are genuinely
+      good at the semantic leftovers: naming, noticing that <code>cust_ref</code> and
+      <code>customer_id</code> are the same idea, spotting that a table is really an event log.</p>
+      <p>The argument is that they should work on <strong>the 10% that needs judgment,
+      grounded by the 90% you derived from evidence</strong> — rather than hallucinating
+      over the whole thing.</p>
+      <ul>
+        <li>Same input, same output — reproducible and auditable</li>
+        <li>Regression-testable: you cannot write a test against a coin flip</li>
+        <li>No API key, no token cost, no network</li>
+        <li>Every claim traces to a constraint you can go and look at</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 12 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">12</div>
+    <div class="body wide">
+      <div class="eyebrow">Coverage</div>
+      <h2>Nine sources, one interface</h2>
+      <div class="scroller">
+        <table>
+          <thead><tr><th>Kind</th><th>Sources</th></tr></thead>
+          <tbody>
+            <tr><td>databases</td><td>PostgreSQL · MySQL / MariaDB · SQL Server · DuckDB</td></tr>
+            <tr><td>warehouses</td><td>Snowflake · Databricks &nbsp;<span style="color:var(--ink-faint)">(BigQuery in progress)</span></td></tr>
+            <tr><td>catalogs</td><td>dbt manifests · Open Semantic Interchange models</td></tr>
+            <tr><td>files</td><td>CSV</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The analysis is identical regardless of dialect — only the introspection differs.
+      Adding a source is a connector plus its tests, with no change to the core.</p>
+    </div>
+  </section>
+
+  <!-- 13 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">13</div>
+    <div class="body wide">
+      <div class="eyebrow">Output</div>
+      <h2>Standards on the way out</h2>
+      <pre><code>:Books_Authors a owl:ObjectProperty, owl:FunctionalProperty ;
+  rdfs:domain :Books ;
+  rdfs:range  :Authors .
+:Books_Authors phys:mappingStyle "FOREIGN_KEY" .
+:Books_Authors phys:tableName   "books" .
+:Books_Authors phys:fromColumns "author_id" .
+:Books_Authors phys:toColumns   "id" .</code></pre>
+      <p>Every concept carries annotations pointing back at its physical origin, so
+      "where did this come from?" always has an answer.</p>
+      <p>The companion <strong>R2RML</strong> mapping feeds straight into an off-the-shelf
+      engine such as Ontop or Morph-KGC, giving a queryable knowledge graph over the live
+      database with no hand-written mapping — normally where weeks of this work go.</p>
+    </div>
+  </section>
+
+  <!-- 14 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">14</div>
+    <div class="body wide">
+      <div class="eyebrow">The hard part</div>
+      <h2>A physical schema is a record of performance decisions</h2>
+      <p>Every denormalisation a DBA made for good reasons is a distortion of the concepts:</p>
+      <ul>
+        <li>A <code>customers</code> table with <code>company_name</code>, <code>company_address</code> — a hidden <em>Company</em>, folded in to avoid a join</li>
+        <li>A <code>party</code> table holding people <em>and</em> organisations, told apart by <code>party_type</code> — two classes in one coat</li>
+        <li>A <code>tags</code> column containing <code>"12, 45, 89"</code> — a many-to-many stuffed into a string</li>
+        <li>Five rows per product with <code>effective_date</code> / <code>expiration_date</code> — a thing mixed with its history</li>
+        <li><code>total_lifetime_value</code> — not a property at all, but a calculation over relationships, frozen</li>
+      </ul>
+      <p>Some of this is measurable. Some is a judgment call no algorithm can settle — and
+      that residue is exactly where a language model earns its place.</p>
+    </div>
+  </section>
+
+  <!-- 15 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">15</div>
+    <div class="body">
+      <div class="eyebrow">Status</div>
+      <h2>Where it is</h2>
+      <ul>
+        <li>Apache-2.0, on PyPI, v0.6.0</li>
+        <li>Nine sources; deterministic baseline; optional LLM refinement</li>
+        <li>OWL (Turtle / JSON-LD) and R2RML exports; CLI, Python API, and an MCP server</li>
+        <li>Several hundred tests — feasible precisely <em>because</em> the core is deterministic</li>
+      </ul>
+      <p>Next: a BigQuery connector, denormalisation detection, and SHACL validation shapes.</p>
+      <p style="font-size:.9rem; color:var(--ink-faint);">Default ontology IRIs are configurable;
+      the library targets no particular database. It is used alongside ArangoDB — a database
+      that stores documents and graphs together — but emits standards any consumer can read.</p>
+    </div>
+  </section>
+
+  <!-- 16 ───────────────────────────────────────────────────────────── -->
+  <section class="slide">
+    <div class="rail">16</div>
+    <div class="body">
+      <div class="eyebrow">In one line</div>
+      <h1 style="font-size:clamp(1.9rem,4.5vw,3.2rem);">Listen to the database before reaching for a tool that guesses.</h1>
+      <p class="lead">Ontology extraction is mostly a reading problem. The parts that need
+      judgment deserve to be marked as such — not quietly absorbed into an answer that looks
+      as confident as the rest.</p>
+      <p style="font-family:var(--mono); font-size:.85rem;">github.com/ArthurKeen/relational-schema-analyzer</p>
+    </div>
+  </section>
+
+</div>
+
+<div class="counter" id="counter">01 / 16</div>
+<div class="hint">↑ ↓ to navigate</div>
+
+<script>
+  (function () {
+    var deck = document.getElementById('deck');
+    var slides = Array.prototype.slice.call(deck.querySelectorAll('.slide'));
+    var counter = document.getElementById('counter');
+    var progress = document.getElementById('progress');
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+
+    function current() {
+      var best = 0, bestDist = Infinity;
+      for (var i = 0; i < slides.length; i++) {
+        var d = Math.abs(slides[i].getBoundingClientRect().top);
+        if (d < bestDist) { bestDist = d; best = i; }
+      }
+      return best;
+    }
+
+    function update() {
+      var i = current();
+      counter.textContent = pad(i + 1) + ' / ' + pad(slides.length);
+      progress.style.width = ((i / (slides.length - 1)) * 100) + '%';
+    }
+
+    deck.addEventListener('scroll', function () {
+      window.requestAnimationFrame(update);
+    }, { passive: true });
+
+    function go(delta) {
+      var target = Math.min(slides.length - 1, Math.max(0, current() + delta));
+      slides[target].scrollIntoView({ block: 'start' });
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight' || e.key === 'PageDown') {
+        e.preventDefault(); go(1);
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'PageUp') {
+        e.preventDefault(); go(-1);
+      } else if (e.key === 'Home') { e.preventDefault(); slides[0].scrollIntoView({ block: 'start' }); }
+      else if (e.key === 'End') { e.preventDefault(); slides[slides.length - 1].scrollIntoView({ block: 'start' }); }
+    });
+
+    update();
+  })();
+</script>
