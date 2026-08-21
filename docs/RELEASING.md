@@ -17,7 +17,12 @@ step that reliably happens, so the tag is what publishes.
 **1. Register the Trusted Publisher on PyPI.** This is a PyPI-side setting; nobody but the
 project owner can do it, and no API token is created or stored.
 
-Go to the project → *Manage* → *Publishing* → *Add a new pending publisher*, and enter:
+The project already exists on PyPI, so this is the **project-level** publisher form — not a
+*pending* publisher, which is only for reserving a name before its first upload:
+
+<https://pypi.org/manage/project/relational-schema-analyzer/settings/publishing/>
+
+Choose the **GitHub** tab and enter:
 
 | Field | Value |
 | --- | --- |
@@ -26,9 +31,15 @@ Go to the project → *Manage* → *Publishing* → *Add a new pending publisher
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
-**2. Create the `pypi` environment** in GitHub: *Settings* → *Environments* → *New
-environment* → name it `pypi`. Optionally add yourself as a required reviewer, which turns
-every publish into an explicit approval click — worth it for an irreversible action.
+**2. The `pypi` GitHub environment** already exists — GitHub creates an environment on first
+reference, and the OIDC token from the first release run carried the
+`environment: pypi` claim, which proves it resolved. Nothing to do unless you want a required
+reviewer (*Settings* → *Environments* → `pypi`), which turns every publish into an explicit
+approval click — worth considering for an irreversible action.
+
+If the publish step ever fails with `invalid-publisher`, the run log prints the exact claims
+the token presented. Compare them field by field against the form above; a mismatch in any
+one of owner, repository, workflow filename, or environment name is the cause.
 
 The mirror at `arango-solutions/relational-schema-analyzer` must **not** be registered as a
 publisher. One repository publishes; the other is a mirror.
