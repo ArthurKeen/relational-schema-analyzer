@@ -289,6 +289,14 @@ projection — the whole core (Phases 0–5) landed together in the first releas
   them, discriminator detection ran only on declared CHECK constraints and specialization
   constraints were always `null`.
 
+- **v0.7.1** — **FK inference targets any single-column candidate key, not only the primary
+  key.** Candidate-target selection only ever proposed `table.primary_key`, so a schema with a
+  surrogate PK beside the natural business key everything references (`accounts.id bigint PK`
+  plus `accounts.account_id text UNIQUE`) generated one candidate, saw it correctly rejected on
+  type, and inferred *nothing* — on exactly the constraint-free schemas the engine exists for.
+  Unique targets rank just below PK targets, so schemas where the PK is the referent are
+  unchanged. Fixes the same root cause for `r2g`, whose `fk_inference` is a re-export shim.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
