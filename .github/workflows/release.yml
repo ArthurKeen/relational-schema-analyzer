@@ -17,6 +17,10 @@ on:
 jobs:
   build:
     name: Build and validate
+    # The mirror at arango-solutions carries these same commits and workflow, so a
+    # tag pushed there would otherwise start a second, competing publish. One
+    # repository publishes; the other is a mirror.
+    if: github.repository == 'ArthurKeen/relational-schema-analyzer'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
