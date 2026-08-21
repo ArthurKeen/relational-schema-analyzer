@@ -70,6 +70,16 @@ packages = ["relational_schema_analyzer"]
 target-version = "py310"
 line-length = 100
 
+[tool.ruff.lint]
+# Declared explicitly rather than inherited. Ruff's *default* rule set is a moving
+# target across minor versions: 0.16 folded UP / RUF / S / ISC / PYI / SIM into the
+# defaults, which turned CI red with 236 errors in files nobody had touched — and
+# kept it red from 2026-08-04 through two release attempts, because local installs
+# were still on 0.15. Naming the rules makes lint reproducible; widening the set is
+# then a deliberate commit with the fixes attached, not a surprise from a dependency
+# resolving a day later.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 markers = [
     "integration: live-database tests; require RUN_INTEGRATION=1 and a per-dialect DSN (opt-in, not run by default)",
