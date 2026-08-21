@@ -4,9 +4,17 @@ Some sources describe their tables faithfully and their *keys* not at all. BigQu
 `gdelt-bq.gdeltv2` declares no primary or foreign keys; AWS Glue, Hive Metastore and Iceberg
 have no constraint vocabulary to declare them with. That is not a gap in the introspection —
 the catalog genuinely does not know — but it is fatal to everything downstream, because
-``fk_inference`` indexes its candidate *targets* by declared primary key
-(``fk_inference._build_pk_index``). No PKs anywhere means no targets, which means no inferred
-relationships, which means a conceptual schema of isolated entities. Correct, and useless.
+``fk_inference`` indexes its candidate *targets* by declared candidate key
+(``fk_inference._build_candidate_key_index``). No keys anywhere means no targets, which means
+no inferred relationships, which means a conceptual schema of isolated entities. Correct, and
+useless.
+
+Note the distinction from the *surrogate-key* case, which is a separate problem with a
+separate fix. There, a table does have a primary key — it just isn't the column children
+reference (a bigint ``id`` beside a UNIQUE natural ``account_id``). Inference handles that
+itself by targeting any single-column candidate key, PK or unique
+(``fk_inference._single_column_candidate_keys``). An overlay is for when the catalog declares
+no key at all, so there is nothing to widen to.
 
 The missing information exists; it just lives in a human's head. This module is where they
 write it down:

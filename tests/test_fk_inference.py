@@ -191,6 +191,164 @@ class TestNameHeuristic:
         assert confs == sorted(confs, reverse=True)
 
 
+# ── Candidate-key targets (surrogate PK + natural key) ─────────────
+
+
+def _keyed_tbl(
+    name: str,
+    cols: list[tuple[str, str, bool, bool]],
+    pk: list[str] | None = None,
+    uniques: list[list[str]] | None = None,
+    *,
+    flag_unique: bool = True,
+) -> Table:
+    """`_tbl` plus UNIQUE constraints.
+
+    ``flag_unique`` mirrors what the enriched connectors do — set both the declared
+    constraint and the per-column flag — and can be turned off to prove each channel
+    works on its own.
+    """
+    t = _tbl(name, cols, pk)
+    t.unique_constraints = [list(u) for u in (uniques or [])]
+    if flag_unique:
+        single = {u[0] for u in t.unique_constraints if len(u) == 1}
+        for c in t.columns:
+            if c.name in single:
+                c.is_unique = True
+    return t
+
+
+class TestCandidateKeyTargets:
+    """A foreign key references a *candidate key*, not specifically the primary key.
+
+    Warehouse-landed schemas routinely carry a surrogate integer PK beside the natural
+    business key everything actually joins on. Targeting only the PK made the real
+    referent invisible and the engine returned nothing on exactly the schemas it exists
+    to serve.
+    """
+
+    def _crm(self) -> Schema:
+        # accounts: surrogate bigint PK `id`, natural text key `account_id` UNIQUE.
+        return _schema(
+            _keyed_tbl(
+                "accounts",
+                [("id", "bigint", False, True), ("account_id", "text", False, False)],
+                ["id"],
+                [["account_id"]],
+            ),
+            _keyed_tbl(
+                "contracts",
+                [
+                    ("id", "bigint", False, True),
+                    ("contract_id", "text", False, False),
+                    ("account_id", "text", False, False),
+                ],
+                ["id"],
+                [["contract_id"]],
+            ),
+            _tbl(
+                "opportunities",
+                [
+                    ("id", "bigint", False, True),
+                    ("account_id", "text", False, False),
+                    ("contract_id", "text", False, False),
+                ],
+                ["id"],
+            ),
+        )
+
+    def test_unique_natural_key_is_a_valid_target(self):
+        out = infer_foreign_keys(self._crm())
+        found = {(c.table, c.columns[0], c.foreign_table, c.foreign_columns[0]) for c in out}
+        assert ("contracts", "account_id", "accounts", "account_id") in found
+        assert ("opportunities", "account_id", "accounts", "account_id") in found
+        assert ("opportunities", "contract_id", "contracts", "contract_id") in found
+
+    def test_surrogate_pk_is_not_proposed_for_a_mismatched_type(self):
+        """The type check still does its job — `text -> bigint` is not a foreign key."""
+        out = infer_foreign_keys(self._crm())
+        assert not [c for c in out if c.foreign_columns == ["id"]]
+
+    def test_primary_key_target_outranks_a_unique_target(self):
+        """Ranking, not replacement: nothing regresses where the PK *is* the referent."""
+        surrogate = infer_foreign_keys(self._crm())
+        natural = self._crm()
+        natural.tables["accounts"].primary_key = ["account_id"]
+        natural.tables["contracts"].primary_key = ["contract_id"]
+
+        def conf(out):
+            return next(
+                c.confidence for c in out
+                if (c.table, c.foreign_table) == ("contracts", "accounts")
+            )
+
+        assert conf(infer_foreign_keys(natural)) > conf(surrogate)
+
+    def test_evidence_names_the_unique_target(self):
+        out = infer_foreign_keys(self._crm())
+        cand = next(c for c in out if (c.table, c.foreign_table) == ("contracts", "accounts"))
+        assert any("UNIQUE" in e for e in cand.evidence)
+
+    def test_column_is_unique_flag_alone_is_enough(self):
+        """Sources that populate the flag but not a constraint list still work."""
+        s = self._crm()
+        for t in s.tables.values():
+            t.unique_constraints = []
+        assert any(c.foreign_columns == ["account_id"] for c in infer_foreign_keys(s))
+
+    def test_declared_unique_constraint_alone_is_enough(self):
+        """...and vice versa."""
+        s = _schema(
+            _keyed_tbl(
+                "accounts",
+                [("id", "bigint", False, True), ("account_id", "text", False, False)],
+                ["id"],
+                [["account_id"]],
+                flag_unique=False,
+            ),
+            _tbl(
+                "contracts",
+                [("id", "bigint", False, True), ("account_id", "text", False, False)],
+                ["id"],
+            ),
+        )
+        assert any(c.foreign_columns == ["account_id"] for c in infer_foreign_keys(s))
+
+    def test_non_unique_column_is_never_a_target(self):
+        """Uniqueness supplies direction; containment alone cannot.
+
+        Without this, a schema where every table carries `account_id` proposes a
+        relationship between every pair in both directions — the low-cardinality
+        containment trap. Only the side that is unique may be the referent.
+        """
+        s = _schema(
+            _tbl("contracts", [("id", "bigint", False, True),
+                               ("account_id", "text", False, False)], ["id"]),
+            _tbl("opportunities", [("id", "bigint", False, True),
+                                   ("account_id", "text", False, False)], ["id"]),
+        )
+        # Neither `account_id` is unique, and there is no `accounts` table to target.
+        out = infer_foreign_keys(s)
+        assert not [c for c in out if c.foreign_columns == ["account_id"]]
+
+    def test_composite_unique_is_not_a_single_column_target(self):
+        s = _schema(
+            _keyed_tbl(
+                "accounts",
+                [
+                    ("id", "bigint", False, True),
+                    ("tenant", "text", False, False),
+                    ("account_id", "text", False, False),
+                ],
+                ["id"],
+                [["tenant", "account_id"]],
+            ),
+            _tbl("contracts", [("id", "bigint", False, True),
+                               ("account_id", "text", False, False)], ["id"]),
+        )
+        assert not [c for c in infer_foreign_keys(s) if c.foreign_columns == ["account_id"]]
+
+
 # ── Composite inference ────────────────────────────────────────────
 
 

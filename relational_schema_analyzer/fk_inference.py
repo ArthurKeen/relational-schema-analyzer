@@ -153,7 +153,7 @@ def infer_foreign_keys(
     """
     opts = options or InferenceOptions()
 
-    pk_index = _build_pk_index(schema, generic_pk_names=opts.generic_pk_names)
+    key_index = _build_candidate_key_index(schema)
     declared_index = _build_declared_fk_index(schema)
 
     single: list[InferredForeignKey] = []
@@ -172,7 +172,7 @@ def infer_foreign_keys(
                     schema,
                     table_name,
                     col,
-                    pk_index,
+                    key_index,
                     opts,
                 )
             )
@@ -197,22 +197,69 @@ def infer_foreign_keys(
 # ── Internal helpers ────────────────────────────────────────────────
 
 
-def _build_pk_index(
-    schema: Schema, *, generic_pk_names: frozenset[str]
-) -> dict[str, list[tuple[str, list[str]]]]:
-    """Index tables by their PK column name(s).
+#: Confidence deducted when the proposed target is a UNIQUE column rather than the
+#: primary key. Small on purpose: a unique column is a perfectly good referent, so
+#: this only breaks ties in favour of the PK when both are plausible — it must not
+#: push an otherwise-solid candidate under ``min_confidence``.
+_UNIQUE_TARGET_PENALTY = 0.05
 
-    Returns ``{pk_col_name_lower: [(table_name, pk_col_names), ...]}``.
-    Tables with no PK, multi-column PKs, or generic PKs still enter the
-    index under their first PK column; generic names are consulted only
-    via the ``{prefix}_id`` pattern (never matched bare).
+
+def _single_column_candidate_keys(table: Table) -> list[tuple[str, bool]]:
+    """Single-column candidate keys of ``table`` as ``(column_name, is_primary_key)``.
+
+    A foreign key references a *candidate key*, not specifically the primary key —
+    and warehouse-landed schemas routinely carry a surrogate integer PK alongside
+    the natural business key everything actually joins on::
+
+        accounts.id          bigint  PRIMARY KEY
+        accounts.account_id  text    UNIQUE      <- what children reference
+
+    Targeting only the PK makes the real referent invisible: the sole candidate
+    generated is ``child.account_id -> accounts.id``, the type check correctly
+    rejects ``text -> bigint``, and the engine returns nothing on a schema it
+    exists to serve.
+
+    Uniqueness is also what supplies *direction*. Containment alone cannot: in a
+    schema with three accounts, every table's ``account_id`` is contained in every
+    other's, both ways. Unique on one side and non-unique on the other is what makes
+    it a many-to-one rather than a coincidence.
+
+    The PK is listed first and wins on collision, so callers ranking by position or
+    by ``is_primary_key`` get the stronger referent first. Composite keys are
+    excluded here; they are the composite pass's business.
     """
-    idx: dict[str, list[tuple[str, list[str]]]] = {}
-    for table_name, table in schema.tables.items():
-        if not table.primary_key:
+    keys: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+
+    if len(table.primary_key) == 1:
+        pk = table.primary_key[0]
+        keys.append((pk, True))
+        seen.add(pk.lower())
+
+    # Declared single-column UNIQUE constraints, then the per-column flag. Both are
+    # populated by the enriched connectors (DESIGN §3.1); either alone is enough.
+    unique_names = [u[0] for u in table.unique_constraints if len(u) == 1]
+    unique_names += [c.name for c in table.columns if c.is_unique]
+    for name in unique_names:
+        if name.lower() in seen:
             continue
-        first = table.primary_key[0].lower()
-        idx.setdefault(first, []).append((table_name, list(table.primary_key)))
+        seen.add(name.lower())
+        keys.append((name, False))
+    return keys
+
+
+def _build_candidate_key_index(schema: Schema) -> dict[str, list[tuple[str, str, bool]]]:
+    """Index tables by each single-column candidate key name.
+
+    Returns ``{key_col_name_lower: [(table_name, key_col_name, is_primary_key), ...]}``.
+    Generic names (``id``, ``uuid``, …) do enter the index; they are consulted only
+    via the ``{prefix}_id`` patterns and never matched bare (see
+    :func:`_candidates_for_column`).
+    """
+    idx: dict[str, list[tuple[str, str, bool]]] = {}
+    for table_name, table in schema.tables.items():
+        for col_name, is_pk in _single_column_candidate_keys(table):
+            idx.setdefault(col_name.lower(), []).append((table_name, col_name, is_pk))
     return idx
 
 
@@ -235,27 +282,21 @@ def _candidates_for_column(
     schema: Schema,
     table_name: str,
     col: Column,
-    pk_index: dict[str, list[tuple[str, list[str]]]],
+    key_index: dict[str, list[tuple[str, str, bool]]],
     opts: InferenceOptions,
 ) -> list[InferredForeignKey]:
     """Produce single-column FK candidates that column ``col`` could be."""
     candidates: list[InferredForeignKey] = []
     local_lower = col.name.lower()
 
-    # Pattern 1 / 2: {prefix}_id, {prefix}id, {prefix}_{pkcol}
+    # Pattern 1 / 2: {prefix}_id, {prefix}id, {prefix}_{keycol}
     prefix_matches = _split_prefix(local_lower)
     for prefix, suffix, method, base_conf in prefix_matches:
-        for foreign_table, pk_cols in _candidate_tables_for_prefix(
-            schema, prefix, opts.generic_pk_names
-        ):
+        for foreign_table, foreign_col, is_pk in _candidate_tables_for_prefix(schema, prefix):
             if foreign_table == table_name:
                 continue
-            if len(pk_cols) != 1:
-                # Composite PKs need the composite pass, not a single-column match.
-                continue
-            foreign_col = pk_cols[0]
             if suffix and suffix != foreign_col.lower():
-                # e.g. pattern `{prefix}_{pkcol}` wants suffix == pk name.
+                # e.g. pattern `{prefix}_{keycol}` wants suffix == the key's name.
                 continue
             cand = _make_candidate(
                 schema,
@@ -264,30 +305,32 @@ def _candidates_for_column(
                 foreign_table,
                 [foreign_col],
                 method=method,
-                base_confidence=base_conf,
-                evidence=[f"name pattern '{col.name}' → {foreign_table}.{foreign_col}"],
+                base_confidence=base_conf - (0.0 if is_pk else _UNIQUE_TARGET_PENALTY),
+                evidence=[
+                    f"name pattern '{col.name}' → {foreign_table}.{foreign_col}"
+                    + ("" if is_pk else " (UNIQUE column, not the primary key)")
+                ],
             )
             if cand is not None:
                 candidates.append(cand)
 
-    # Pattern 4: direct PK-name match (non-generic).
+    # Pattern 4: the column name is itself a candidate key elsewhere (non-generic).
     if local_lower not in opts.generic_pk_names:
-        for foreign_table, pk_cols in pk_index.get(local_lower, []):
+        for foreign_table, foreign_col, is_pk in key_index.get(local_lower, []):
             if foreign_table == table_name:
-                continue
-            if len(pk_cols) != 1:
                 continue
             cand = _make_candidate(
                 schema,
                 table_name,
                 [col.name],
                 foreign_table,
-                pk_cols,
+                [foreign_col],
                 method="pk_name_match",
-                base_confidence=0.55,
+                base_confidence=0.55 - (0.0 if is_pk else _UNIQUE_TARGET_PENALTY),
                 evidence=[
-                    f"column '{col.name}' matches PK of '{foreign_table}' "
-                    f"(non-generic name)"
+                    f"column '{col.name}' matches the "
+                    f"{'primary key' if is_pk else 'UNIQUE column'} of "
+                    f"'{foreign_table}' (non-generic name)"
                 ],
             )
             if cand is not None:
@@ -327,22 +370,24 @@ def _split_prefix(col_lower: str) -> list[tuple[str, str, InferenceMethod, float
 
 
 def _candidate_tables_for_prefix(
-    schema: Schema, prefix: str, generic_pk_names: frozenset[str]
-) -> list[tuple[str, list[str]]]:
-    """Return ``(table_name, pk_cols)`` for tables whose name matches ``prefix``
-    in singular/plural form.
+    schema: Schema, prefix: str
+) -> list[tuple[str, str, bool]]:
+    """Return ``(table_name, key_column, is_primary_key)`` for every single-column
+    candidate key of the tables whose name matches ``prefix`` in singular/plural form.
+
+    One table can contribute several entries — a surrogate PK *and* a natural unique
+    key are both legitimate referents, and which one a given child column actually
+    points at is decided downstream by the type check and the confidence ranking.
     """
     if not prefix:
         return []
-    candidates: list[tuple[str, list[str]]] = []
+    candidates: list[tuple[str, str, bool]] = []
     target_names = {prefix, _pluralize(prefix), _singularize(prefix)}
     for table_name, table in schema.tables.items():
-        if table_name.lower() in target_names and table.primary_key:
-            pk_cols = list(table.primary_key)
-            if len(pk_cols) == 1 and pk_cols[0].lower() in generic_pk_names:
-                candidates.append((table_name, pk_cols))
-            elif len(pk_cols) == 1:
-                candidates.append((table_name, pk_cols))
+        if table_name.lower() not in target_names:
+            continue
+        for col_name, is_pk in _single_column_candidate_keys(table):
+            candidates.append((table_name, col_name, is_pk))
     return candidates
 
 
