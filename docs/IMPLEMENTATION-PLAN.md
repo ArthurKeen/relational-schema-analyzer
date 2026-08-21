@@ -291,6 +291,10 @@ projection — the whole core (Phases 0–5) landed together in the first releas
 
 Planned next:
 
+- **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
+  `mcp.server.fastmcp` in favour of a new `MCPServer` API (FastMCP moved to its own package).
+  `mcp_server.py` targets the 1.x FastMCP API. Porting it is a contained piece of work; until
+  then the pin is what keeps the extra installable.
 - **v0.8.0** — the **BigQuery** connector with its cost governor (see
   [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
   Northwind); the downstream `r2g` and `arango-ontoextract` integration PRs; shared contract
