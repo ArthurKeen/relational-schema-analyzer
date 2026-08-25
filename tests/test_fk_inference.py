@@ -349,6 +349,89 @@ class TestCandidateKeyTargets:
         assert not [c for c in infer_foreign_keys(s) if c.foreign_columns == ["account_id"]]
 
 
+class TestCompositeCandidateKeyTargets:
+    """The composite half of the candidate-key fix.
+
+    A composite business key is as often a UNIQUE constraint beside a surrogate ``id``
+    as it is the primary key, and the composite pass scanned only ``primary_key``.
+    """
+
+    def _schema(self, composite_as_pk: bool) -> Schema:
+        pk = ["tenant", "account_id"] if composite_as_pk else ["id"]
+        uniques = [] if composite_as_pk else [["tenant", "account_id"]]
+        return _schema(
+            _keyed_tbl(
+                "accounts",
+                [
+                    ("id", "bigint", False, not composite_as_pk),
+                    ("tenant", "text", False, composite_as_pk),
+                    ("account_id", "text", False, composite_as_pk),
+                ],
+                pk,
+                uniques,
+            ),
+            _tbl(
+                "contracts",
+                [
+                    ("id", "bigint", False, True),
+                    ("tenant", "text", False, False),
+                    ("account_id", "text", False, False),
+                ],
+                ["id"],
+            ),
+        )
+
+    def _composite(self, schema: Schema) -> list[InferredForeignKey]:
+        return [c for c in infer_foreign_keys(schema) if c.method == "composite"]
+
+    def test_composite_unique_is_a_valid_target(self):
+        out = self._composite(self._schema(composite_as_pk=False))
+        assert len(out) == 1
+        assert out[0].columns == ["tenant", "account_id"]
+        assert out[0].foreign_table == "accounts"
+        assert out[0].foreign_columns == ["tenant", "account_id"]
+
+    def test_composite_pk_target_outranks_a_composite_unique_target(self):
+        unique_conf = self._composite(self._schema(composite_as_pk=False))[0].confidence
+        pk_conf = self._composite(self._schema(composite_as_pk=True))[0].confidence
+        assert pk_conf > unique_conf
+
+    def test_evidence_names_the_unique_constraint(self):
+        out = self._composite(self._schema(composite_as_pk=False))
+        assert any("UNIQUE constraint" in e for e in out[0].evidence)
+
+    def test_single_column_unique_does_not_produce_a_composite(self):
+        """Single-column keys belong to the single-column pass, not this one."""
+        s = _schema(
+            _keyed_tbl(
+                "accounts",
+                [("id", "bigint", False, True), ("account_id", "text", False, False)],
+                ["id"],
+                [["account_id"]],
+            ),
+            _tbl("contracts", [("id", "bigint", False, True),
+                               ("account_id", "text", False, False)], ["id"]),
+        )
+        assert self._composite(s) == []
+
+    def test_composite_unique_identical_to_the_pk_is_not_duplicated(self):
+        s = _schema(
+            _keyed_tbl(
+                "accounts",
+                [("tenant", "text", False, True), ("account_id", "text", False, True)],
+                ["tenant", "account_id"],
+                [["tenant", "account_id"]],
+            ),
+            _tbl(
+                "contracts",
+                [("id", "bigint", False, True), ("tenant", "text", False, False),
+                 ("account_id", "text", False, False)],
+                ["id"],
+            ),
+        )
+        assert len(self._composite(s)) == 1
+
+
 # ── Composite inference ────────────────────────────────────────────
 
 

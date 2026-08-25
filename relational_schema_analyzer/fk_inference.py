@@ -248,6 +248,38 @@ def _single_column_candidate_keys(table: Table) -> list[tuple[str, bool]]:
     return keys
 
 
+def _multi_column_candidate_keys(table: Table) -> list[tuple[list[str], bool]]:
+    """Multi-column candidate keys of ``table`` as ``(column_names, is_primary_key)``.
+
+    The composite counterpart of :func:`_single_column_candidate_keys`, and it exists
+    for the same reason: a composite business key is just as often expressed as a
+    UNIQUE constraint beside a surrogate primary key as it is as the primary key
+    itself::
+
+        accounts.id                      bigint  PRIMARY KEY
+        accounts.(tenant, account_id)             UNIQUE   <- what children reference
+
+    Scanning only ``primary_key`` made that target invisible, exactly as it did in the
+    single-column case. The composite PK is listed first and wins on collision.
+    """
+    keys: list[tuple[list[str], bool]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    if len(table.primary_key) >= 2:
+        keys.append((list(table.primary_key), True))
+        seen.add(tuple(c.lower() for c in table.primary_key))
+
+    for cols in table.unique_constraints:
+        if len(cols) < 2:
+            continue  # single-column keys belong to the single-column pass
+        sig = tuple(c.lower() for c in cols)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        keys.append((list(cols), False))
+    return keys
+
+
 def _build_candidate_key_index(schema: Schema) -> dict[str, list[tuple[str, str, bool]]]:
     """Index tables by each single-column candidate key name.
 
@@ -478,12 +510,17 @@ def _find_composite_candidates(
     single_candidates: list[InferredForeignKey],  # kept for future use (e.g. evidence merging)
     declared_index: dict[str, set[tuple[str, ...]]],
 ) -> list[InferredForeignKey]:
-    """Directly scan the schema for composite-PK FK candidates.
+    """Directly scan the schema for composite FK candidates.
 
-    For every foreign table ``F`` with a multi-column primary key
-    ``(k1, …, kn)``, find local tables ``L`` that contain every ``ki``
-    as a non-PK column with a type compatible with ``F.ki``. Emit a
-    composite suggestion preserving ``F``'s PK column order.
+    For every multi-column *candidate key* ``(k1, …, kn)`` of every foreign table
+    ``F`` — its composite primary key, and each composite UNIQUE constraint — find
+    local tables ``L`` that contain every ``ki`` with a type compatible with
+    ``F.ki``. Emit a composite suggestion preserving the key's column order.
+
+    Considering UNIQUE constraints and not just the PK is the composite half of the
+    same fix applied to single columns: a composite business key is as often a
+    UNIQUE beside a surrogate ``id`` as it is the primary key. A UNIQUE target is
+    ranked just below an otherwise-identical PK target.
 
     This is intentionally independent of the single-column pass: the
     child column names don't have to match the parent table's name
@@ -494,10 +531,13 @@ def _find_composite_candidates(
     del single_candidates  # parameter reserved for future evidence merging
     out: list[InferredForeignKey] = []
 
-    for foreign_table, foreign in schema.tables.items():
-        if len(foreign.primary_key) < 2:
-            continue
-        maybe_pk_cols = [_find_col(foreign, k) for k in foreign.primary_key]
+    targets = [
+        (name, tbl, key_names, is_pk)
+        for name, tbl in schema.tables.items()
+        for key_names, is_pk in _multi_column_candidate_keys(tbl)
+    ]
+    for foreign_table, foreign, key_names, is_pk in targets:
+        maybe_pk_cols = [_find_col(foreign, k) for k in key_names]
         if any(pc is None for pc in maybe_pk_cols):
             continue
         pk_cols = cast("list[Column]", maybe_pk_cols)
@@ -532,7 +572,7 @@ def _find_composite_candidates(
                 pass
 
             columns = [pc.name for pc in pk_cols]
-            foreign_columns = list(foreign.primary_key)
+            foreign_columns = list(key_names)
             if tuple(sorted(columns)) in declared_index.get(local_table, set()):
                 continue
 
@@ -559,6 +599,8 @@ def _find_composite_candidates(
             # regardless.
             if local_pk_set == set(columns):
                 confidence = min(1.0, confidence + 0.05)
+            if not is_pk:
+                confidence = max(0.0, confidence - _UNIQUE_TARGET_PENALTY)
 
             out.append(
                 InferredForeignKey(
@@ -569,8 +611,9 @@ def _find_composite_candidates(
                     confidence=round(confidence, 3),
                     method="composite",
                     evidence=[
-                        f"composite match on PK of '{foreign_table}': "
-                        f"({', '.join(foreign_columns)})"
+                        f"composite match on "
+                        f"{'PK' if is_pk else 'UNIQUE constraint'} of "
+                        f"'{foreign_table}': ({', '.join(foreign_columns)})"
                     ],
                 )
             )
