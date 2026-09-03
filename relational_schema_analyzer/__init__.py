@@ -32,6 +32,7 @@ from .connectors import (
     create_source_connector,
 )
 from .fk_inference import (
+    DuckDbValueSampler,
     InferenceOptions,
     InferredForeignKey,
     create_value_sampler,
@@ -89,6 +90,7 @@ __all__ = [
     "InferredForeignKey",
     "InferenceOptions",
     "create_value_sampler",
+    "DuckDbValueSampler",
     # Declared-key overlay (for sources whose catalog declares no keys)
     "apply_key_overlay",
     "load_key_overlay",

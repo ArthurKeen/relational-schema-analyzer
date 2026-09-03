@@ -69,7 +69,7 @@ documentation-grade metadata even when unenforced). Where nothing is declared,
 sampling** — the fraction of a child column's distinct values present in the
 candidate parent, computed on samples, never bulk reads. Inferred keys carry a
 confidence score so downstream review can accept or reject them. Sampler
-coverage is per-connector (PostgreSQL, MySQL, SQL Server, CSV today; the
+coverage is per-connector (PostgreSQL, MySQL, SQL Server, DuckDB, CSV today; the
 Snowflake value sampler is tracked work — until then Snowflake inference is
 declared-keys + name heuristics).
 

@@ -195,6 +195,7 @@ available backend with capability gating):
 | Offline artifact (always-on) | **OSI** | `*.osi.yaml` fixture; datasets/keys/relationships → tables/constraints/FKs (no types → temporal/string) | `tests/test_osi_connector.py`, main CI |
 | Embedded (always-on) | **Snowflake** | `fakesnow` (DuckDB-backed, patches the driver in-process) | `tests/test_snowflake_fakesnow.py`, main CI |
 | Embedded (always-on) | all dialects incl. **Databricks** | recorded result-set + mock-cursor unit tests | `tests/test_*_connector.py`, main CI |
+| Embedded (always-on) | **DuckDB sampler** | the only place sampler *SQL* is executed against real rows — value overlap + all three denormalization probes, plus connector→inference→sampler end to end | `tests/test_duckdb_sampler.py`, main CI |
 | Offline corpus (always-on) | CSV | real CSV connector + golden bundle | `tests/test_golden_csv.py`, main CI |
 | Live Docker (CI) | **Postgres, MySQL** | service containers + `RUN_INTEGRATION` conformance | `tests/integration/`, `integration.yml` |
 | Live opt-in (DSN) | SQL Server, **Snowflake**, **Databricks** | same harness, gated by a DSN env var | `tests/integration/` (skipped without DSN) |
@@ -206,6 +207,11 @@ available backend with capability gating):
   `RSA_DATABRICKS_DSN`.
 - **DuckDB** (implemented) → embeddable, always-on, exercises the full capability set and
   validates the generic `information_schema` FK/PK/unique resolution the RDBMS connectors reuse.
+  It is also the **only tier that executes sampler SQL against real rows**. Every other sampler
+  is covered by mock cursors returning a canned number, which verifies the plumbing and not one
+  character of the SQL — and that gap is precisely how two CSV denormalization probes shipped a
+  `TypeError` that fired the first time they touched data. A mock-only sampler test should be
+  read as "unverified SQL".
 
 ---
 

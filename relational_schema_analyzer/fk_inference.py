@@ -1398,6 +1398,167 @@ class DatabricksValueSampler:
         return self._scalar(q, (delimiter,))
 
 
+# ── Concrete DuckDB value sampler ───────────────────────────────────
+
+
+class DuckDbValueSampler:
+    """Sampler that computes FK value-overlap and denormalization probes via DuckDB.
+
+    DuckDB is this project's always-on engine (see the testing matrix in
+    ``docs/IMPLEMENTATION-PLAN.md``): embedded, server-less, and speaking a
+    Postgres-shaped dialect. That makes it the one place the sampler *SQL* can be
+    executed for real in ordinary CI, with no Docker and no cloud account.
+
+    That matters more than it sounds. Every other sampler is covered only by mock
+    cursors primed to return a canned number, which verifies the plumbing and not
+    one character of the SQL — and precisely that gap let two of the CSV probes ship
+    a ``TypeError`` on their first contact with real data.
+
+    Parameters are bound (DuckDB uses ``?``), identifiers are double-quoted, and any
+    driver error is logged and surfaced as ``None`` so a failed measurement degrades
+    to "not evaluated" rather than a wrong answer.
+    """
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        schema_name: str = "main",
+        limit: int = 10_000,
+    ) -> None:
+        from .connectors.duckdb_source import _DEFAULT_SCHEMA_SENTINELS
+
+        self.connection_string = connection_string
+        self.schema_name = (
+            "main" if schema_name in _DEFAULT_SCHEMA_SENTINELS else schema_name
+        )
+        self.limit = max(100, int(limit))
+        self._conn = None
+
+    def _conn_lazy(self):
+        if self._conn is None:
+            from .connectors.duckdb_source import _load_duckdb
+
+            duckdb = _load_duckdb()
+            self._conn = duckdb.connect(self.connection_string, read_only=True)
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = None
+
+    def __enter__(self) -> "DuckDbValueSampler":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _qi(self, name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    def _qt(self, table: str) -> str:
+        return f"{self._qi(self.schema_name)}.{self._qi(table)}"
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("duckdb_sampler_connect_failed", error=str(err))
+            return None
+        try:
+            row = conn.execute(query, params).fetchone() if params else conn.execute(query).fetchone()
+            if not row or row[0] is None:
+                return None
+            return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning("duckdb_sampler_query_failed", error=str(err))
+            return None
+
+    def __call__(
+        self,
+        local_table: str,
+        local_column: str,
+        foreign_table: str,
+        foreign_column: str,
+    ) -> SamplerResult:
+        """Fraction of distinct local values present in the foreign column."""
+        q = f"""
+            WITH l AS (
+                SELECT DISTINCT {self._qi(local_column)} AS v
+                FROM {self._qt(local_table)}
+                WHERE {self._qi(local_column)} IS NOT NULL
+                LIMIT ?
+            ),
+            f AS (
+                SELECT DISTINCT {self._qi(foreign_column)} AS v
+                FROM {self._qt(foreign_table)}
+                LIMIT ?
+            )
+            SELECT COUNT(*) FILTER (WHERE f.v IS NOT NULL)::DOUBLE
+                       / GREATEST(COUNT(*), 1)::DOUBLE
+            FROM l LEFT JOIN f ON l.v = f.v
+        """  # noqa: S608 - identifiers are quoted; limits are bound ints we own
+        result = self._scalar(q, (self.limit, self.limit))
+        if result is None:
+            logger.warning(
+                "fk_sampler_query_failed",
+                local=f"{local_table}.{local_column}",
+                foreign=f"{foreign_table}.{foreign_column}",
+            )
+        return result
+
+    # ── Denormalization probes ─────────────────────────────────────
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        q = f"""
+            WITH s AS (
+                SELECT {self._qi(column)} AS v
+                FROM {self._qt(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+                LIMIT ?
+            )
+            SELECT COUNT(DISTINCT v)::DOUBLE / GREATEST(COUNT(*), 1)::DOUBLE FROM s
+        """  # noqa: S608 - identifiers are quoted; limit is a bound int we own
+        return self._scalar(q, (self.limit,))
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        det = ", ".join(self._qi(c) for c in determinant_columns)
+        not_null = " AND ".join(f"{self._qi(c)} IS NOT NULL" for c in determinant_columns)
+        q = f"""
+            WITH s AS (
+                SELECT {det}, {self._qi(dependent_column)} AS dep
+                FROM {self._qt(table)}
+                LIMIT ?
+            ),
+            g AS (
+                SELECT {det}, COUNT(DISTINCT dep) AS dcount
+                FROM s WHERE {not_null} GROUP BY {det}
+            )
+            SELECT COALESCE(AVG(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END), 0)::DOUBLE
+            FROM g
+        """  # noqa: S608 - identifiers are quoted; limit is a bound int we own
+        return self._scalar(q, (self.limit,))
+
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        q = f"""
+            WITH s AS (
+                SELECT {self._qi(column)} AS v
+                FROM {self._qt(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+                LIMIT ?
+            )
+            SELECT COALESCE(AVG(CASE WHEN strpos(v, ?) > 0 THEN 1.0 ELSE 0.0 END), 0)::DOUBLE
+            FROM s
+        """  # noqa: S608 - identifiers are quoted; limit is a bound int we own
+        return self._scalar(q, (self.limit, delimiter))
+
+
 # ── Concrete CSV value sampler ──────────────────────────────────────
 
 
@@ -1596,7 +1757,7 @@ def create_value_sampler(
 
     PostgreSQL (incl. ``postgres`` / ``pg`` aliases) → :class:`PostgresValueSampler`,
     MySQL / MariaDB → :class:`MySQLValueSampler`, SQL Server →
-    :class:`SQLServerValueSampler`, Databricks → :class:`DatabricksValueSampler`,
+    :class:`SQLServerValueSampler`, DuckDB → :class:`DuckDbValueSampler`, Databricks → :class:`DatabricksValueSampler`,
     CSV → :class:`CsvValueSampler`; any other type returns ``None`` (the caller
     should fall back to name-only inference). Connector / import errors are
     allowed to propagate so callers can decide whether to log-and-continue.
@@ -1618,6 +1779,8 @@ def create_value_sampler(
         return MySQLValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if is_sqlserver(source_type):
         return SQLServerValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if normalize_source_type(source_type) == "duckdb":
+        return DuckDbValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "databricks":
         return DatabricksValueSampler(
             connection_string, schema_name=pg_schema, limit=limit
