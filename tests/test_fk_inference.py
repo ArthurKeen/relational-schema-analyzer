@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from relational_schema_analyzer.fk_inference import (
@@ -14,6 +16,8 @@ from relational_schema_analyzer.fk_inference import (
     infer_foreign_keys,
 )
 from relational_schema_analyzer.types import Column, ForeignKey, Schema, Table
+
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -960,6 +964,52 @@ class TestDatabricksValueSampler:
         assert s.group_single_valued("orders", ["user_id"], "city") == 0.5
         assert s.delimiter_rate("orders", "tags", ",") == 0.5
         assert captured[-1][1] == (",",)
+
+
+class TestDenormalizationProbesAgainstRealData:
+    """The three denormalization probes, run against actual rows.
+
+    These probes existed in all five samplers with **no caller anywhere** and one
+    mock test that asserted only "the method exists and returns the fake value".
+    Consequently the Polars implementations had never executed, and two of the three
+    raised ``TypeError`` on first contact with real data — ``Series.filter`` wants a
+    boolean mask while the code handed it an expression.
+
+    The CSV sampler is the one that runs with no database, so it is where the
+    measurement half gets exercised for real. The fixture encodes each pattern by
+    construction: ``zip`` determines ``city``/``state`` (an embedded lookup),
+    ``plan`` is low-cardinality (redundant reference data), and ``tags`` holds
+    comma-delimited multi-values in 3 of its 6 rows.
+    """
+
+    FIXTURE = str(_FIXTURES / "denorm_csv")
+
+    @pytest.fixture
+    def sampler(self) -> CsvValueSampler:
+        return CsvValueSampler(self.FIXTURE)
+
+    def test_functional_dependency_is_detected(self, sampler):
+        """zip -> city holds for every group: the signature of an embedded lookup."""
+        assert sampler.group_single_valued("customers", ["zip"], "city") == 1.0
+        assert sampler.group_single_valued("customers", ["zip"], "state") == 1.0
+
+    def test_non_dependency_scores_zero(self, sampler):
+        """Every zip group has several names, so nothing is determined."""
+        assert sampler.group_single_valued("customers", ["zip"], "name") == 0.0
+
+    def test_distinct_ratio_flags_low_cardinality(self, sampler):
+        assert sampler.distinct_ratio("customers", "plan") == 0.5   # 3 of 6
+        assert sampler.distinct_ratio("customers", "id") == 1.0     # a key
+
+    def test_delimiter_rate_finds_multi_valued_columns(self, sampler):
+        assert sampler.delimiter_rate("customers", "tags", ",") == 0.5  # 3 of 6
+        assert sampler.delimiter_rate("customers", "city", ",") == 0.0
+
+    def test_missing_table_degrades_to_none(self, sampler):
+        """A probe that cannot measure returns None — never a wrong number."""
+        assert sampler.distinct_ratio("nosuchtable", "plan") is None
+        assert sampler.delimiter_rate("nosuchtable", "tags", ",") is None
+        assert sampler.group_single_valued("nosuchtable", ["zip"], "city") is None
 
 
 class TestCreateValueSamplerDispatch:

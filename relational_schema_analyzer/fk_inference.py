@@ -1534,9 +1534,13 @@ class CsvValueSampler:
         frame = self._read_columns(table, [column])
         if frame is None or not frame.columns:
             return None
-        series = frame.get_column(frame.columns[0]).filter(
-            pl.col(frame.columns[0]).is_not_null() & (pl.col(frame.columns[0]) != "")
-        )
+        # Filter on the frame, not the Series: ``DataFrame.filter`` takes
+        # expressions while ``Series.filter`` wants a boolean mask, and passing an
+        # expression to the latter raises. Reading text with inference off means
+        # ``!= ""`` is a valid emptiness test on every column.
+        name = frame.columns[0]
+        frame = frame.filter(pl.col(name).is_not_null() & (pl.col(name) != ""))
+        series = frame.get_column(name)
         total = series.len()
         if total == 0:
             return None
@@ -1569,9 +1573,10 @@ class CsvValueSampler:
         if frame is None or not frame.columns:
             return None
         name = frame.columns[0]
-        series = frame.get_column(name).filter(
-            pl.col(name).is_not_null() & (pl.col(name) != "")
-        )
+        # Same as distinct_ratio: filter the frame (expressions) rather than the
+        # Series (boolean mask), which raises on an expression.
+        frame = frame.filter(pl.col(name).is_not_null() & (pl.col(name) != ""))
+        series = frame.get_column(name)
         total = series.len()
         if total == 0:
             return None

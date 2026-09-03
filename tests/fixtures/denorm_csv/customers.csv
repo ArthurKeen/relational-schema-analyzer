@@ -1,0 +1,7 @@
+id,name,zip,city,state,tags,plan
+1,Ann,10001,New York,NY,"vip,beta",gold
+2,Bob,10001,New York,NY,"beta",gold
+3,Cal,94107,San Francisco,CA,"vip",silver
+4,Dee,94107,San Francisco,CA,"beta,trial",silver
+5,Eve,60601,Chicago,IL,"vip,beta,trial",gold
+6,Fay,60601,Chicago,IL,"trial",bronze
