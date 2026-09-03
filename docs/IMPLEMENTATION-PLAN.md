@@ -199,6 +199,7 @@ available backend with capability gating):
 | Offline corpus (always-on) | CSV | real CSV connector + golden bundle | `tests/test_golden_csv.py`, main CI |
 | Live Docker (CI) | **Postgres, MySQL** | service containers + `RUN_INTEGRATION` conformance | `tests/integration/`, `integration.yml` |
 | Live opt-in (DSN) | SQL Server, **Snowflake**, **Databricks** | same harness, gated by a DSN env var | `tests/integration/` (skipped without DSN) |
+| Live opt-in (DSN) | **Postgres sampler SQL** | value overlap + all three denormalization probes executed against a real Postgres — the per-dialect SQL DuckDB cannot vouch for | `tests/integration/test_sampler_probes.py` (skipped without `RSA_PG_DSN`) |
 
 - **Snowflake** → `fakesnow` for CI (real code path, no cloud) + opt-in live via `RSA_SNOWFLAKE_DSN`.
 - **Databricks** (implemented) → Unity Catalog `information_schema` introspection (three-level
