@@ -304,6 +304,17 @@ projection — the whole core (Phases 0–5) landed together in the first releas
   Unique targets rank just below PK targets, so schemas where the PK is the referent are
   unchanged. Fixes the same root cause for `r2g`, whose `fk_inference` is a re-export shim.
 
+- **v0.7.2** — **the denormalization probes had never executed.** They exist in every
+  sampler, are called by nothing in this library, and had one mock test asserting the
+  methods return the fake value its own fake cursor was primed with — so two of the three
+  CSV probes raised `TypeError` the first time they touched real rows. Fixed, plus real-data
+  coverage: a `DuckDbValueSampler` (the factory previously returned `None` for `duckdb`, so
+  value analysis silently degraded to name-only) with always-on tests, and live Postgres
+  probe tests. Composite FK targets now include composite UNIQUE keys, completing the 0.7.1
+  candidate-key fix. `r2g` needs this version: 0.4.0 **and** 0.7.1 both carry the broken
+  probes, so a real-sampler test against either passes for the wrong reason —
+  `_safe_probe` swallows the error and the sampling detectors emit nothing.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled

@@ -57,6 +57,38 @@ starts at a pattern-specific base and is modulated by:
 - ``-0.25`` when overlap is 0 (hard veto unless caller disables).
 - ``-0.1`` per non-nullable column that looks like it points at a
   nullable PK (usually a modelling mistake, not a real FK).
+
+Denormalization probes — a consumer-facing API with no caller here
+------------------------------------------------------------------
+
+Alongside the value-overlap ``__call__``, every sampler exposes three probes:
+
+- ``distinct_ratio(table, column)`` — distinct values over row count. Low means
+  redundant reference data.
+- ``group_single_valued(table, determinant_columns, dependent_column)`` — the
+  fraction of determinant groups with a single dependent value, i.e. **functional
+  dependency strength**. ``zip`` determining ``city``/``state`` is an embedded
+  lookup that wants extracting into its own entity.
+- ``delimiter_rate(table, column, delimiter)`` — the fraction of sampled values
+  containing the delimiter. High means a multi-valued column (``"a,b,c"``) that is
+  really a relationship stuffed into a string.
+
+**Nothing in this library calls them, and that is deliberate rather than dead
+code.** They are the measurement half of denormalization analysis; the engine that
+interprets them — detectors, scored findings, remediation hints — lives in
+``r2g``'s ``denorm.py`` and injects a sampler here. Consumers are expected to call
+these directly, which is why they are documented rather than made private.
+
+Two things a consumer should know. Each probe returns ``None`` for "could not
+evaluate" and never raises, so a failed measurement degrades to *unmeasured* rather
+than to a wrong number — treat ``None`` as absence of evidence, not evidence of
+absence. And the ``group_single_valued`` probe is the expensive one: it groups
+rather than scanning, so bound it with the sampler's ``limit`` and, on a
+pay-per-byte engine, a cost ceiling.
+
+The layering here is inverted — the paradigm-neutral analysis sits in the consumer
+while the library holds only the instrument — and the reasons for leaving it that
+way are recorded in ``docs/DESIGN-ADDENDUM-denormalization.md``.
 """
 
 from __future__ import annotations
