@@ -17,9 +17,15 @@ on:
 jobs:
   build:
     name: Build and validate
-    # The mirror at arango-solutions carries these same commits and workflow, so a
-    # tag pushed there would otherwise start a second, competing publish. One
-    # repository publishes; the other is a mirror.
+    # Exactly one repository may publish: both carry the same commits and this same
+    # workflow, so an unguarded tag push would start two runs racing to upload the
+    # same immutable version.
+    #
+    # This deliberately names the *secondary*. As of 2026-09-08 arango-solutions is
+    # the primary repository, but PyPI's trusted publisher is registered for
+    # ArthurKeen and publishing was intentionally left there — see
+    # docs/RELEASING.md. Do not "correct" this to match the primary without first
+    # registering the publisher, or the next release fails with invalid-publisher.
     if: github.repository == 'ArthurKeen/relational-schema-analyzer'
     runs-on: ubuntu-latest
     steps:
