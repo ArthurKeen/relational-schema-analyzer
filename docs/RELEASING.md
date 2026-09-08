@@ -41,8 +41,25 @@ If the publish step ever fails with `invalid-publisher`, the run log prints the 
 the token presented. Compare them field by field against the form above; a mismatch in any
 one of owner, repository, workflow filename, or environment name is the cause.
 
-The mirror at `arango-solutions/relational-schema-analyzer` must **not** be registered as a
-publisher. One repository publishes; the other is a mirror.
+Exactly one repository may be registered as a publisher. Two registrations would mean two
+runs racing to upload the same immutable version, and the loser fails confusingly.
+
+> **Polarity switched 2026-09-08, and publishing did not move with it.**
+> `arango-solutions` is now the **primary** (origin fetches from it; `gh` defaults to it) and
+> `ArthurKeen` the secondary — but the PyPI trusted publisher is still registered for
+> `ArthurKeen`, and `release.yml`'s guard still names it. So releases continue to publish
+> from the secondary. That works, and 0.7.2 proves it: the guard skipped the Release run on
+> `arango-solutions` while `ArthurKeen` published.
+>
+> **To move publishing to the primary, in this order** — reversing it breaks the next release
+> with `invalid-publisher`, exactly as 0.7.0's first attempt failed:
+>
+> 1. Register the trusted publisher on PyPI for owner `arango-solutions`, same repository
+>    name, workflow and environment. (Browser; only a project owner can.)
+> 2. Confirm the `pypi` environment exists in the `arango-solutions` repository.
+> 3. Only then change `release.yml`'s guard to
+>    `github.repository == 'arango-solutions/relational-schema-analyzer'`, and remove the
+>    `ArthurKeen` registration from PyPI so the two cannot both fire.
 
 ---
 
@@ -68,9 +85,12 @@ publisher. One repository publishes; the other is a mirror.
 
    ```bash
    git tag -a vX.Y.Z -m "Release X.Y.Z — <one line>"
-   git push origin main --follow-tags
-   git push solutions main --follow-tags     # mirror; does not publish
+   git push origin main --follow-tags        # fans out to BOTH repositories
    ```
+
+   `origin` carries two push URLs, so one push reaches `arango-solutions` (primary) and
+   `ArthurKeen` (secondary). There is no second command; the old
+   `git push solutions …` no longer exists.
 
 6. **Watch the run.** `gh run watch` or the Actions tab. The workflow refuses to publish if the
    tag disagrees with `pyproject.toml`, and refuses if `twine check` fails.
