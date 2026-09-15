@@ -65,6 +65,17 @@ git config --get-all remote.origin.pushurl   # both URLs must be listed
 
 Same trap if a tag is ever created through the `arango-solutions` web UI rather than pushed.
 
+**Renaming the `ArthurKeen` repository breaks publishing the same silent way.** The guard
+matches `github.repository` literally, and PyPI's trusted publisher is registered against a
+specific owner/repo pair — so a rename makes the guard false *and* invalidates the
+registration. The run goes green, the job skips, nothing is published, nothing goes red.
+
+This is not hypothetical: `arangodb-schema-analyzer` lost its trusted publisher exactly this
+way when its repository was renamed, and two releases had to be uploaded by hand before anyone
+noticed. If this repository is ever renamed — including for consistency with the
+`arango-solutions` primary — update the guard in `release.yml` **and** re-register the
+publisher on PyPI, in that order.
+
 <details>
 <summary>If publishing is ever moved to the primary, the order matters</summary>
 
