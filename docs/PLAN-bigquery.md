@@ -17,7 +17,7 @@ Two audiences with different bars:
 | Audience | Bar |
 | --- | --- |
 | **Aug 20 demo** (customer POV) | RSA / AOE point at `gdelt-bq.gdeltv2` live and produce an ontology + R2RML mapping; the diff against the hand-designed graph is explainable. |
-| **The library** | A connector held to the same conformance harness as the other eight sources, with the cost governance BigQuery uniquely requires, released as v0.7.0. |
+| **The library** | A connector held to the same conformance harness as the other eight sources, with the cost governance BigQuery uniquely requires, released as v0.9.0 (see the revision notes at the end). |
 
 The demo bar is the *earlier* and *narrower* one. The plan sequences accordingly: everything the
 demo needs lands first, and it deliberately needs **no data-scanning query at all**.
@@ -50,7 +50,7 @@ Dates assume work starts 2026-08-12. Everything through M3 is RSA-local except t
 | **M2** | Aug 16 | **Overlay + artifacts.** Declared-key overlay; `examples/gdelt/` committed (snapshot, overlay, bundle, `ontology.ttl`, `mapping.ttl`) with an offline golden test. | full `snapshot → analyze → owl → r2rml` chain over GDELT |
 | **M3** | Aug 18 | **Surfaces + AOE.** CLI/tool-contract/README/DESIGN updates; AOE source registration; **demo dry run end to end**; the hand-designed-vs-extracted diff written up. | the actual D6 segment, rehearsed |
 | **M4** | Aug 20 | **Demo.** | — |
-| **M5** | post-demo | **Cost governor + sampler.** `BigQueryValueSampler` with dry-run gating, `maximum_bytes_billed`, TABLESAMPLE, partition-filter injection, per-column cache, session budget. Release **v0.7.0**. | value-overlap FK inference over BigQuery, safely |
+| **M5** | post-demo | **Cost governor + sampler.** `BigQueryValueSampler` with dry-run gating, `maximum_bytes_billed`, TABLESAMPLE, partition-filter injection, per-column cache, session budget. Release **v0.9.0**. | value-overlap FK inference over BigQuery, safely |
 | **M6** | post-demo | **r2g port** (introspection + `SourceSession` bulk read) → the backfit becomes possible. | r2g ingest from BigQuery |
 
 **Critical path to Aug 20:** M0 → M1 → M2 → M3. Roughly 3–4 focused days of work with ~4 days of
@@ -118,7 +118,7 @@ story and an option held open.
 - [ ] Acceptance criteria B1–B7 (addendum §7) pass; suite green; ruff + mypy clean
 - [ ] `examples/gdelt/` regenerates offline with no network and no credentials
 - [ ] The demo runbook records **measured** bytes and cost for the full metadata sweep
-- [ ] v0.7.0 released with the connector, overlay, and cost-governed sampler
+- [ ] v0.9.0 released with the connector and cost-governed sampler (the overlay shipped in 0.7.0)
 - [ ] `DESIGN.md` §9.3 / §9.3.1 and the architecture diagram updated to include BigQuery
 
 ## 8. Decisions (resolved 2026-08-12)
@@ -159,6 +159,11 @@ missing.
 > milestone blocked on credentials — and AOE, the consumer that most needs the overlay, could
 > not use it until it was on PyPI. The principle above is unchanged and still binds v0.8.0:
 > no BigQuery release without the cost governor.
+>
+> **Revised 2026-09-15.** 0.8.0 has also shipped without BigQuery — it carries bitemporal
+> stamping (`bitemporal.py`, 2026-09-12, commissioned by the CDF unified-architecture paper).
+> The BigQuery release is now **v0.9.0**. Same principle: no BigQuery release without the
+> cost governor.
 
 ### M0 prerequisites — owner: Arthur, blocking everything
 
