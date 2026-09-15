@@ -9,7 +9,7 @@ These schemas define the wire shape of the analyzer's JSON bundle:
 ## Provenance & compatibility
 
 `response.schema.json` and `request.schema.json` are **copied from**
-[`arango-schema-mapper/docs/tool-contract/v1/`](https://github.com/ArthurKeen/arango-schema-mapper)
+[`arango-schema-analyzer/docs/tool-contract/v1/`](https://github.com/ArthurKeen/arango-schema-analyzer)
 (the `arangodb-schema-analyzer` contract). This is deliberate — per `docs/DESIGN.md`
 §9.2, we **copy the v1 schema now and converge to a shared contract package later** rather
 than block on extracting one.

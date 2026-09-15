@@ -1,6 +1,6 @@
 # Design addendum — abstraction discovery, and RSA's place in the stack
 
-**Status:** PROPOSED. Companion to `arango-schema-analyzer/docs/prd-patch-proposal-relational-and-taxonomy.md`
+**Status:** IMPLEMENTED (0.6.0 — `relational_schema_analyzer/taxonomy.py`, delegating to `conceptual-taxonomy`; see README "Class abstractions"). Companion to `arango-schema-analyzer/docs/prd-patch-proposal-relational-and-taxonomy.md`
 and `conceptual-taxonomy/docs/SPEC.md`.
 
 **Context.** Work on `arango-schema-analyzer` (ASA) to handle relational-style physical

@@ -14,7 +14,7 @@ whole ecosystem rather than being trapped inside `r2g`.
 - **Reverse the dependency.** `r2g` ends up depending on this library, not vice versa.
 - **Baseline first.** The deterministic, no-LLM path must produce a complete, useful bundle.
   LLM is additive refinement only.
-- **Contract compatibility.** Match `arango-schema-mapper`'s tool-contract v1 wire shape so a
+- **Contract compatibility.** Match `arango-schema-analyzer`'s tool-contract v1 wire shape so a
   single consumer (e.g. `arango-ontoextract`) handles relational and Arango sources.
 - **No behavior change in r2g** during extraction — verified by r2g's existing test suite.
 
@@ -28,7 +28,7 @@ whole ecosystem rather than being trapped inside `r2g`.
 - [x] `relational_schema_analyzer/__init__.py` public API skeleton
 - [x] `.gitignore`, license (Apache-2.0), CI stub (ruff + pytest)
 - [x] `docs/tool-contract/v1/response.schema.json` (+ request schema, examples) copied/adapted
-      from `arango-schema-mapper/docs/tool-contract/v1/`
+      from `arango-schema-analyzer/docs/tool-contract/v1/`
 - [x] Create GitHub repo and push `main`
 
 Optional extras layout (mirror Arango analyzer):
@@ -253,7 +253,7 @@ available backend with capability gating):
       (this realizes r2g's planned Phase 10 ontology derivation via the shared lib)
 - [ ] **arango-ontoextract integration**: add relational source path that calls
       `export_owl_turtle()` + provenance, alongside the existing Arango path
-- [ ] Coordinate with `arango-schema-mapper` maintainers on a **shared contract package** to
+- [ ] Coordinate with `arango-schema-analyzer` maintainers on a **shared contract package** to
       retire `MappingBundle` duplication
 
 ---
@@ -336,7 +336,8 @@ Planned next:
   `mcp.server.fastmcp` in favour of a new `MCPServer` API (FastMCP moved to its own package).
   `mcp_server.py` targets the 1.x FastMCP API. Porting it is a contained piece of work; until
   then the pin is what keeps the extra installable.
-- **v0.8.0** — the **BigQuery** connector with its cost governor (see
+- **v0.9.0 (target; was v0.8.0 until bitemporal stamping took that number)** — the
+  **BigQuery** connector with its cost governor (see
   [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
   Northwind); the downstream `r2g` and `arango-ontoextract` integration PRs; shared contract
   package.

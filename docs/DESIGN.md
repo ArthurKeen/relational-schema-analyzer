@@ -1,7 +1,7 @@
 # Design Spec — relational-schema-analyzer
 
 Status: Draft v0.1
-Audience: maintainers of `r2g`, `arango-ontoextract`, `arango-schema-mapper`, and future
+Audience: maintainers of `r2g`, `arango-ontoextract`, `arango-schema-analyzer`, and future
 relational-native query tooling.
 
 ---
@@ -55,7 +55,7 @@ analyzer. Therefore the immediate consumers of this library are:
 
 The shared contract for the conceptual consumers is still the JSON bundle
 `{ conceptualSchema, physicalMapping, metadata }`, aligned 1:1 with
-`arango-schema-mapper/docs/tool-contract/v1/`, with a relational `physicalMapping` variant.
+`arango-schema-analyzer/docs/tool-contract/v1/`, with a relational `physicalMapping` variant.
 
 ### Goals & success criteria
 
@@ -260,7 +260,7 @@ Mirrors the Arango analyzer's generate/validate/repair loop. Refines, never repl
 - denormalization detection (planned in r2g `PLAN-denormalization-analysis.md`)
 
 Providers behind an interface (`openai` / `anthropic` / `openrouter` extras), same as
-`arango-schema-mapper/schema_analyzer/providers/`.
+`arango-schema-analyzer/schema_analyzer/providers/`.
 
 ---
 
@@ -325,7 +325,7 @@ JSON tool contract (stdio).
 ## 7. Tool contract ("all of the above via one contract")
 
 We adopt the **same wire shape** as
-`arango-schema-mapper/docs/tool-contract/v1/response.schema.json`:
+`arango-schema-analyzer/docs/tool-contract/v1/response.schema.json`:
 
 ```json
 {
@@ -369,7 +369,7 @@ The four design-phase open questions are now resolved.
 ### 9.1 License — **Apache-2.0**
 
 Matches the rest of the ecosystem: `arangodb-schema-analyzer` (the
-`arango-schema-mapper` repo) ships under **Apache-2.0**, same author/maintainer. We adopt
+`arango-schema-analyzer` repo) ships under **Apache-2.0**, same author/maintainer. We adopt
 Apache-2.0 verbatim so the libraries are license-compatible for the planned dependency
 chain (`r2g` → this lib; `arango-ontoextract` consuming our exports).
 
@@ -379,11 +379,11 @@ chain (`r2g` → this lib; `arango-ontoextract` consuming our exports).
 ### 9.2 Shared contract package — **copy the v1 schema now, converge later**
 
 We do **not** block v0 on extracting a shared `*-schema-contract` package. Coordinating a
-new published package across `arango-schema-mapper`, `arango-cypher-py`, and
+new published package across `arango-schema-analyzer`, `arango-cypher-py`, and
 `arango-sparql-py` is its own effort and would stall this library.
 
 - v0: copy `docs/tool-contract/v1/response.schema.json` (+ request schema + examples) from
-  `arango-schema-mapper`, adapt only the `physicalMapping` style enums, and **pin a
+  `arango-schema-analyzer`, adapt only the `physicalMapping` style enums, and **pin a
   compatible version range** against the Arango analyzer's contract version.
 - Follow-up (Phase 5): drive extraction of a single shared `schema-contract` package and
   retire the duplicated `MappingBundle` definitions. Track as a cross-repo issue.
