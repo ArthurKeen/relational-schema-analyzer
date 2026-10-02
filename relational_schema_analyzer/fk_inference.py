@@ -94,7 +94,7 @@ way are recorded in ``docs/DESIGN-ADDENDUM-denormalization.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal, Optional, cast
+from typing import Any, Callable, Literal, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -1777,6 +1777,281 @@ class CsvValueSampler:
         return float(contains.sum() / total)
 
 
+# ── Concrete Snowflake value sampler (cost-governed) ──────────────────
+
+
+class SnowflakeValueSampler:
+    """FK value-overlap sampler for Snowflake, with a cost governor.
+
+    Every query consumes warehouse credits, so -- following the BigQuery design
+    (``docs/DESIGN-ADDENDUM-bigquery.md`` D3) -- probing is bounded three ways,
+    none of them unbounded by default:
+
+    - **Query budget.** At most ``max_queries`` probe queries per sampler. On
+      exhaustion every probe returns ``None`` (the protocol's "not evaluated"),
+      so inference falls back to names instead of failing or spending more.
+    - **Statement timeout.** ``STATEMENT_TIMEOUT_IN_SECONDS`` is set on the
+      session, so a probe that turns out expensive is cancelled by Snowflake.
+    - **Per-column cache.** The protocol is called once per candidate *pair*;
+      each column's bounded distinct set is fetched once and reused, turning
+      O(pairs) scans into O(columns).
+
+    Probes carry ``QUERY_TAG`` (default ``rsa-value-sampler``) so their cost is
+    findable in ``QUERY_HISTORY``. ``stats`` reports what was spent.
+
+    **Overlap is measured against the whole foreign column**, not a prefix of
+    it. The local side is a bounded distinct sample; when the foreign column's
+    distinct values fit the bound they are compared client-side, otherwise the
+    sampled local values are checked server-side against the full column.
+    (Comparing against an arbitrary ``LIMIT``-ed slice of a large foreign table
+    scores a valid FK near zero.) Values are compared as text: Python ``str``
+    client-side, ``TO_VARCHAR`` server-side (see :meth:`_norm`).
+
+    Pass ``connection_string`` (password or key-pair URL) or an open
+    ``connection``; a supplied connection is used as-is and not closed.
+    """
+
+    def __init__(
+        self,
+        connection_string: str | None = None,
+        *,
+        connection: Any = None,
+        schema_name: str = "PUBLIC",
+        limit: int = 10_000,
+        max_queries: int = 200,
+        statement_timeout_s: int = 60,
+        query_tag: str = "rsa-value-sampler",
+    ) -> None:
+        if connection is None and not connection_string:
+            raise ValueError("SnowflakeValueSampler needs a connection_string or a connection")
+        if int(max_queries) < 1:
+            raise ValueError("max_queries must be at least 1: sampling has no unbounded mode")
+        if int(statement_timeout_s) < 1:
+            raise ValueError("statement_timeout_s must be at least 1 second")
+        self.connection_string = connection_string
+        self.limit = max(100, int(limit))
+        self.max_queries = int(max_queries)
+        self.statement_timeout_s = int(statement_timeout_s)
+        self.query_tag = query_tag
+        self._conn = connection
+        self._owns_conn = connection is None
+        self._session_ready = False
+        self._connect_params: dict[str, Any] = {}
+        self.schema_name = schema_name.upper() if schema_name else "PUBLIC"
+        if connection_string:
+            from .connectors.snowflake import _parse_snowflake_url
+
+            self._connect_params = _parse_snowflake_url(connection_string)
+            url_schema = self._connect_params.pop("_url_schema", None)
+            if url_schema and schema_name in (None, "", "public", "PUBLIC"):
+                self.schema_name = url_schema.upper()
+        self._distinct_cache: dict[tuple[str, str], tuple[frozenset[str], bool]] = {}
+        self.queries_run = 0
+        self.cache_hits = 0
+        self.budget_exhausted = False
+
+    # ── lifecycle ──
+
+    def close(self) -> None:
+        if self._conn is not None and self._owns_conn:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._owns_conn:
+            self._conn = None
+
+    def __enter__(self) -> "SnowflakeValueSampler":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """What the governor allowed: queries run, cache hits, whether it stopped."""
+        return {
+            "queries_run": self.queries_run,
+            "max_queries": self.max_queries,
+            "cache_hits": self.cache_hits,
+            "budget_exhausted": self.budget_exhausted,
+        }
+
+    def _conn_lazy(self) -> Any:
+        if self._conn is None:
+            from .connectors.snowflake import _load_snowflake_connector, _safe_connection_error
+
+            params = dict(self._connect_params)
+            params.setdefault("schema", self.schema_name)
+            snowflake = _load_snowflake_connector()
+            try:
+                self._conn = snowflake.connect(**params)
+            except Exception as err:
+                raise RuntimeError(
+                    f"Failed to connect to Snowflake: {_safe_connection_error(err, params)}"
+                ) from err
+        if not self._session_ready:
+            self._session_ready = True
+            # Session settings are metadata statements (no warehouse), so they are
+            # not charged to the probe budget. Best-effort: an emulator may not
+            # support them, and a missing tag must not disable sampling.
+            for stmt in (
+                f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {self.statement_timeout_s}",
+                "ALTER SESSION SET QUERY_TAG = '" + self.query_tag.replace("'", "''") + "'",
+            ):
+                try:
+                    cur = self._conn.cursor()
+                    try:
+                        cur.execute(stmt)
+                    finally:
+                        cur.close()
+                except Exception as err:  # noqa: BLE001
+                    logger.info("snowflake_sampler_session_setting_skipped", error=str(err))
+        return self._conn
+
+    # ── governed execution ──
+
+    def _run(self, sql: str, params: tuple) -> list[tuple] | None:
+        """Execute one probe within budget; ``None`` on exhaustion or any failure."""
+        if self.queries_run >= self.max_queries:
+            if not self.budget_exhausted:
+                self.budget_exhausted = True
+                logger.warning(
+                    "snowflake_sampler_budget_exhausted",
+                    max_queries=self.max_queries,
+                    hint="remaining probes return None; inference falls back to names",
+                )
+            return None
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("fk_sampler_connect_failed", error=str(err))
+            return None
+        self.queries_run += 1
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(sql, params)
+                return list(cur.fetchall())
+            finally:
+                cur.close()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("snowflake_sampler_query_failed", error=str(err))
+            return None
+
+    @staticmethod
+    def _ident(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    def _table(self, table: str) -> str:
+        return f"{self._ident(self.schema_name)}.{self._ident(table)}"
+
+    @staticmethod
+    def _norm(value: Any) -> str:
+        """Render a value as ``TO_VARCHAR`` does, so client- and server-side agree.
+
+        ``str`` already matches for integers, strings and decimals -- including
+        scaled ones: ``NUMBER(10,2)`` arrives as ``Decimal("42.00")`` and
+        ``TO_VARCHAR`` keeps ``"42.00"``, so it must not be collapsed to ``"42"``.
+        Integral floats are the exception: Python prints ``42.0``, Snowflake ``42``.
+        """
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return str(value)
+
+    def _distinct(self, table: str, column: str) -> tuple[frozenset[str], bool] | None:
+        """Bounded distinct non-null values of a column, cached; flag = complete set."""
+        key = (table, column)
+        if key in self._distinct_cache:
+            self.cache_hits += 1
+            return self._distinct_cache[key]
+        col = self._ident(column)
+        rows = self._run(
+            f"SELECT DISTINCT {col} FROM {self._table(table)} WHERE {col} IS NOT NULL LIMIT %s",  # noqa: S608 - quoted identifiers from the catalog
+            (self.limit + 1,),
+        )
+        if rows is None:
+            return None
+        values = [r[0] for r in rows]
+        result = (frozenset(self._norm(v) for v in values[: self.limit]), len(values) <= self.limit)
+        self._distinct_cache[key] = result
+        return result
+
+    # ── sampler protocol ──
+
+    def __call__(
+        self,
+        local_table: str,
+        local_column: str,
+        foreign_table: str,
+        foreign_column: str,
+    ) -> SamplerResult:
+        """Fraction of sampled distinct local values present in the foreign column."""
+        local = self._distinct(local_table, local_column)
+        if local is None or not local[0]:
+            return None
+        local_values = local[0]
+        foreign = self._distinct(foreign_table, foreign_column)
+        if foreign is None:
+            return None
+        foreign_values, complete = foreign
+        if complete:
+            return len(local_values & foreign_values) / len(local_values)
+        # The foreign column has more distinct values than the bound: test the
+        # sampled local values against the whole column, server-side.
+        import json
+
+        fcol = self._ident(foreign_column)
+        rows = self._run(
+            f"SELECT COUNT(DISTINCT TO_VARCHAR({fcol})) FROM {self._table(foreign_table)} "  # noqa: S608
+            f"WHERE TO_VARCHAR({fcol}) IN "
+            "(SELECT VALUE::STRING FROM TABLE(FLATTEN(INPUT => PARSE_JSON(%s))))",
+            (json.dumps(sorted(local_values)),),
+        )
+        if not rows or rows[0][0] is None:
+            return None
+        return min(1.0, float(rows[0][0]) / len(local_values))
+
+    # ── Denormalization probes (PRD Phase 11) ──
+
+    def _scalar(self, sql: str, params: tuple) -> SamplerResult:
+        rows = self._run(sql, params)
+        if not rows or rows[0][0] is None:
+            return None
+        return float(rows[0][0])
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        col = self._ident(column)
+        return self._scalar(
+            f"WITH s AS (SELECT {col} AS v FROM {self._table(table)} "  # noqa: S608
+            f"WHERE {col} IS NOT NULL LIMIT %s) "
+            "SELECT COUNT(DISTINCT v) / GREATEST(COUNT(*), 1) FROM s",
+            (self.limit,),
+        )
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        det = ", ".join(self._ident(c) for c in determinant_columns)
+        not_null = " AND ".join(f"{self._ident(c)} IS NOT NULL" for c in determinant_columns)
+        return self._scalar(
+            f"WITH s AS (SELECT {det}, {self._ident(dependent_column)} AS dep "  # noqa: S608
+            f"FROM {self._table(table)} LIMIT %s), "
+            f"g AS (SELECT {det}, COUNT(DISTINCT dep) AS dcount FROM s WHERE {not_null} GROUP BY {det}) "
+            "SELECT COALESCE(AVG(IFF(dcount <= 1, 1.0, 0.0)), 0) FROM g",
+            (self.limit,),
+        )
+
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        col = self._ident(column)
+        return self._scalar(
+            f"WITH s AS (SELECT TO_VARCHAR({col}) AS v FROM {self._table(table)} "  # noqa: S608
+            f"WHERE {col} IS NOT NULL LIMIT %s) "
+            "SELECT COALESCE(AVG(IFF(CONTAINS(v, %s), 1.0, 0.0)), 0) FROM s",
+            (self.limit, delimiter),
+        )
+
+
 def create_value_sampler(
     source_type: str | None,
     connection_string: str,
@@ -1790,6 +2065,7 @@ def create_value_sampler(
     PostgreSQL (incl. ``postgres`` / ``pg`` aliases) → :class:`PostgresValueSampler`,
     MySQL / MariaDB → :class:`MySQLValueSampler`, SQL Server →
     :class:`SQLServerValueSampler`, DuckDB → :class:`DuckDbValueSampler`, Databricks → :class:`DatabricksValueSampler`,
+    Snowflake → :class:`SnowflakeValueSampler` (cost-governed),
     CSV → :class:`CsvValueSampler`; any other type returns ``None`` (the caller
     should fall back to name-only inference). Connector / import errors are
     allowed to propagate so callers can decide whether to log-and-continue.
@@ -1814,9 +2090,10 @@ def create_value_sampler(
     if normalize_source_type(source_type) == "duckdb":
         return DuckDbValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "databricks":
-        return DatabricksValueSampler(
-            connection_string, schema_name=pg_schema, limit=limit
-        )
+        return DatabricksValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if normalize_source_type(source_type) == "snowflake":
+        # Governed by default (query budget + statement timeout); see the class.
+        return SnowflakeValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "csv":
         return CsvValueSampler(
             connection_string,

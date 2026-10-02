@@ -284,3 +284,74 @@ class TestIntrospection:
         assert pg_type_to_json_type(created_at.data_type) == "string"
         id_col = next(c for c in users.columns if c.name == "ID")
         assert pg_type_to_json_type(id_col.data_type) == "float"
+
+
+# ── Key-pair authentication (ported from r2g's Snowflake connector) ─────────
+
+
+class TestKeyPairAuthentication:
+    def test_key_pair_url_matches_connector_arguments(self, tmp_path):
+        from urllib.parse import urlencode
+
+        key_path = tmp_path / "snowflake key.p8"
+        key_path.touch()
+        query = urlencode(
+            {
+                "warehouse": "ETL_WH",
+                "role": "READER",
+                "private_key_file": str(key_path),
+                "private_key_file_pwd": "test-only-passphrase",
+                # A caller-supplied authenticator must not weaken key-pair auth.
+                "authenticator": "externalbrowser",
+            }
+        )
+        kw = _parse_snowflake_url(f"snowflake://svc:@xy12345/ANALYTICS/CORE?{query}")
+
+        assert kw["private_key_file"] == str(key_path)
+        assert kw["private_key_file_pwd"] == "test-only-passphrase"
+        assert kw["authenticator"] == "SNOWFLAKE_JWT"
+        assert "password" not in kw
+
+    def test_password_and_private_key_are_mutually_exclusive(self, tmp_path):
+        from urllib.parse import urlencode
+
+        key_path = tmp_path / "k.p8"
+        key_path.touch()
+        with pytest.raises(ValueError, match="exactly one"):
+            _parse_snowflake_url(
+                f"snowflake://svc:pw@xy12345/ANALYTICS?{urlencode({'private_key_file': str(key_path)})}"
+            )
+
+    def test_private_key_passphrase_requires_key_file(self):
+        with pytest.raises(ValueError, match="requires private_key_file"):
+            _parse_snowflake_url("snowflake://svc:@xy12345/ANALYTICS?private_key_file_pwd=x")
+
+    def test_missing_authentication_method_is_rejected(self):
+        with pytest.raises(ValueError, match="requires a password or private_key_file"):
+            _parse_snowflake_url("snowflake://svc:@xy12345/ANALYTICS")
+
+    def test_private_key_file_must_exist(self, tmp_path):
+        from urllib.parse import urlencode
+
+        missing = tmp_path / "missing.p8"
+        with pytest.raises(ValueError, match="existing file"):
+            _parse_snowflake_url(
+                f"snowflake://svc:@xy12345/ANALYTICS?{urlencode({'private_key_file': str(missing)})}"
+            )
+
+    def test_connect_error_masks_key_path_and_passphrase(self, monkeypatch, tmp_path):
+        from urllib.parse import urlencode
+
+        key_path = tmp_path / "sentinel-key.p8"
+        key_path.touch()
+        passphrase = "sentinel-passphrase"
+
+        def fake_connect(**kwargs):
+            raise RuntimeError(f"cannot read {kwargs['private_key_file']} with {passphrase}")
+
+        _install_fake_snowflake(monkeypatch, fake_connect)
+        query = urlencode({"private_key_file": str(key_path), "private_key_file_pwd": passphrase})
+        with pytest.raises(RuntimeError, match="Failed to connect to Snowflake") as exc:
+            SnowflakeConnector(f"snowflake://svc:@xy12345/ANALYTICS?{query}").get_schema()
+        assert str(key_path) not in str(exc.value)
+        assert passphrase not in str(exc.value)

@@ -1044,4 +1044,8 @@ class TestCreateValueSamplerDispatch:
         assert isinstance(s, DatabricksValueSampler)
 
     def test_unsupported_returns_none(self):
-        assert create_value_sampler("snowflake", "snowflake://u:p@a/DB") is None
+        # Snowflake used to be the example here; it now has a governed sampler
+        # (see tests/test_snowflake_sampler.py). BigQuery stays metadata-only
+        # until its own governor lands (DESIGN-ADDENDUM-bigquery D3).
+        assert create_value_sampler("bigquery", "bigquery://project/dataset") is None
+        assert create_value_sampler("oracle", "oracle://u:p@h/db") is None
