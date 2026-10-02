@@ -404,6 +404,45 @@ class SQLServerConnector:
         grouped: OrderedDict[str, list[str]] = OrderedDict()
         for row in cur.fetchall():
             grouped.setdefault(row["CONSTRAINT_NAME"], []).append(row["COLUMN_NAME"])
+        unique_sets = list(grouped.values())
+        seen = {frozenset(u) for u in unique_sets}
+        for cols in self._fetch_unique_indexes(cur, table_name):
+            if frozenset(cols) not in seen:
+                seen.add(frozenset(cols))
+                unique_sets.append(cols)
+        return unique_sets
+
+    def _fetch_unique_indexes(self, cur: Any, table_name: str) -> list[list[str]]:
+        """Key columns of unique indexes that back no constraint.
+
+        ``CREATE UNIQUE INDEX`` enforces uniqueness like a ``UNIQUE`` constraint but
+        is not listed in ``INFORMATION_SCHEMA.TABLE_CONSTRAINTS``, so FK inference
+        could not target it. Excluded: filtered indexes (``WHERE``: unique only over
+        a subset of rows), disabled indexes, ``INCLUDE`` columns (stored, not key),
+        and indexes backing a PK or UNIQUE constraint (reported by the constraint
+        query). SQL Server indexes cannot be on expressions, only on columns.
+        """
+        cur.execute(
+            """
+            SELECT i.name AS INDEX_NAME, c.name AS COLUMN_NAME, ic.key_ordinal
+            FROM sys.indexes i
+            JOIN sys.index_columns ic
+              ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+            JOIN sys.columns c
+              ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+            JOIN sys.tables t ON t.object_id = i.object_id
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            WHERE i.is_unique = 1 AND i.is_primary_key = 0
+              AND i.is_unique_constraint = 0 AND i.has_filter = 0
+              AND i.is_disabled = 0 AND ic.is_included_column = 0
+              AND s.name = %s AND t.name = %s
+            ORDER BY i.name, ic.key_ordinal
+            """,
+            (self.schema_name, table_name),
+        )
+        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        for row in cur.fetchall():
+            grouped.setdefault(row["INDEX_NAME"], []).append(row["COLUMN_NAME"])
         return list(grouped.values())
 
     def _fetch_check_constraints(self, cur: Any, table_name: str) -> list[CheckConstraint]:

@@ -374,6 +374,16 @@ class MySQLConnector:
         )
 
     def _fetch_unique_constraints(self, cur: Any, table_name: str) -> list[list[str]]:
+        """UNIQUE keys, including unique indexes (MySQL lists both as constraints).
+
+        A unique index with a *functional* key part -- ``UNIQUE (ext, (lower(note)))``
+        -- is excluded: ``KEY_COLUMN_USAGE`` lists only its plain columns, so it
+        would otherwise be reported as a key on ``ext`` alone, which is false (only
+        the pair with the expression is unique). Functional parts appear in
+        ``STATISTICS`` with a NULL ``COLUMN_NAME``; testing for that rather than
+        MySQL 8's ``EXPRESSION`` column also works on MariaDB, which lacks it.
+        Prefix parts (``email(10)``) stay: distinct prefixes imply distinct values.
+        """
         cur.execute(
             """
             SELECT tc.CONSTRAINT_NAME, kcu.COLUMN_NAME, kcu.ORDINAL_POSITION
@@ -384,6 +394,12 @@ class MySQLConnector:
               AND tc.TABLE_NAME = kcu.TABLE_NAME
             WHERE tc.CONSTRAINT_TYPE = 'UNIQUE'
               AND tc.TABLE_SCHEMA = %s AND tc.TABLE_NAME = %s
+              AND NOT EXISTS (
+                SELECT 1 FROM information_schema.STATISTICS st
+                WHERE st.TABLE_SCHEMA = tc.TABLE_SCHEMA
+                  AND st.TABLE_NAME = tc.TABLE_NAME
+                  AND st.INDEX_NAME = tc.CONSTRAINT_NAME
+                  AND st.COLUMN_NAME IS NULL)
             ORDER BY tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
             """,
             (self.schema_name, table_name),

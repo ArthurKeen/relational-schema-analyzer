@@ -453,6 +453,53 @@ class PostgresConnector:
         grouped: OrderedDict[str, list[str]] = OrderedDict()
         for row in cur.fetchall():
             grouped.setdefault(row["constraint_name"], []).append(row["column_name"])
+        unique_sets = list(grouped.values())
+        seen = {frozenset(u) for u in unique_sets}
+        for cols in self._fetch_unique_indexes(cur, table_name):
+            if frozenset(cols) not in seen:
+                seen.add(frozenset(cols))
+                unique_sets.append(cols)
+        return unique_sets
+
+    def _fetch_unique_indexes(
+        self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str
+    ) -> list[list[str]]:
+        """Key columns of unique indexes that back no constraint.
+
+        ``CREATE UNIQUE INDEX`` guarantees uniqueness exactly as a ``UNIQUE``
+        constraint does, but it is not a constraint, so it never appears in
+        ``information_schema.table_constraints`` -- and FK inference, which targets
+        only declared candidate keys, could not see it. pagila's
+        ``store.manager_staff_id`` is one.
+
+        Only indexes that make a column set a key qualify. Excluded:
+        partial indexes (``WHERE``: unique only over a subset of rows), expression
+        indexes (``lower(email)``: the key is a function, not the column), invalid
+        indexes (a failed ``CREATE INDEX CONCURRENTLY``), ``INCLUDE`` columns
+        (stored, not part of the key), and any index already backing a PK or
+        UNIQUE constraint (reported by the constraint query).
+        """
+        cur.execute(
+            """
+            SELECT ix.relname AS index_name, a.attname AS column_name, k.ord
+            FROM pg_index i
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class ix ON ix.oid = i.indexrelid
+            CROSS JOIN LATERAL unnest((i.indkey::int2[])[0:i.indnkeyatts - 1])
+                WITH ORDINALITY AS k(attnum, ord)
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+            WHERE i.indisunique AND NOT i.indisprimary AND i.indisvalid
+              AND i.indpred IS NULL AND i.indexprs IS NULL
+              AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)
+              AND n.nspname = %s AND t.relname = %s
+            ORDER BY ix.relname, k.ord;
+            """,
+            (self.schema_name, table_name),
+        )
+        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        for row in cur.fetchall():
+            grouped.setdefault(row["index_name"], []).append(row["column_name"])
         return list(grouped.values())
 
     def _fetch_check_constraints(
