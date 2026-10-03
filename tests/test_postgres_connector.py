@@ -42,6 +42,9 @@ _COMMENTS = {"users": [{"column_name": "email", "comment": "contact email"}]}
 _PKS = {"users": [{"column_name": "id"}], "orders": [{"column_name": "id"}]}
 _UNIQUES = {"users": [{"constraint_name": "users_email_key", "column_name": "email",
                        "ordinal_position": 1}]}
+# Unique indexes backing no constraint (pg_index query). Empty for the canonical
+# shop; individual tests patch it to exercise merge/dedupe.
+_UNIQUE_INDEXES: dict[str, list[dict]] = {}
 _FKS = {
     "orders": [{"column_name": "user_id", "foreign_table_name": "users",
                 "foreign_column_name": "id", "constraint_name": "orders_user_id_fkey"}],
@@ -69,6 +72,8 @@ def _resolve(sql: str, params: tuple):
         return list(_PKS.get(table, []))
     if "'UNIQUE'" in s:
         return list(_UNIQUES.get(table, []))
+    if "pg_index" in s:
+        return list(_UNIQUE_INDEXES.get(table, []))
     if "c.contype = 'f'" in s:
         return list(_FKS.get(table, []))
     if "c.contype = 'c'" in s:
@@ -147,3 +152,37 @@ def test_enrichment_details(pg_shop):
     assert conf._find_table(pg_shop, "active_users").is_view is True
     orders = conf._find_table(pg_shop, "orders")
     assert orders.foreign_keys[0].is_unique is False
+
+
+def test_unique_indexes_become_candidate_keys_once(monkeypatch):
+    """A unique index with no constraint is a key; one duplicating a constraint is not
+    counted twice. Which indexes qualify (no partial/expression/INCLUDE/invalid) is
+    decided in SQL and verified live in tests/integration/test_unique_indexes_live.py."""
+    monkeypatch.setattr(pg, "psycopg", _FakePsycopg())
+    monkeypatch.setitem(
+        _UNIQUE_INDEXES,
+        "users",
+        [
+            {"index_name": "users_status_created_uq", "column_name": "status", "ord": 1},
+            {"index_name": "users_status_created_uq", "column_name": "created_at", "ord": 2},
+            {"index_name": "users_email_dup", "column_name": "email", "ord": 1},
+        ],
+    )
+    users = pg.PostgresConnector("postgresql://u:p@h/shop").get_schema().tables["users"]
+
+    assert users.unique_constraints == [["email"], ["status", "created_at"]]
+    # Composite members are not single-column keys.
+    assert {c.name for c in users.columns if c.is_unique} == {"id", "email"}
+
+
+def test_merge_unique_sets_never_repeats_the_primary_key():
+    # A CREATE UNIQUE INDEX on the PK columns is not a second candidate key;
+    # an index on a new column set is, once; declared constraints keep their order.
+    from relational_schema_analyzer.connectors.base import merge_unique_sets
+
+    merged = merge_unique_sets(
+        [["code"]],
+        [["id"], ["code"], ["region", "ext"], ["ext", "region"]],
+        ["id"],
+    )
+    assert merged == [["code"], ["region", "ext"]]

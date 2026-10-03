@@ -100,6 +100,28 @@ _MYSQL_ALIASES: frozenset[str] = frozenset({"mysql", "mariadb"})
 _MSSQL_ALIASES: frozenset[str] = frozenset({"sqlserver", "mssql", "sql_server"})
 
 
+def merge_unique_sets(
+    constraints: list[list[str]],
+    indexes: list[list[str]],
+    primary_key: list[str],
+) -> list[list[str]]:
+    """Declared UNIQUE constraints, then unique indexes that add a new key.
+
+    An index whose column set is already a UNIQUE constraint or the primary key
+    adds nothing: a ``CREATE UNIQUE INDEX`` that repeats the PK would otherwise
+    surface as a second, phantom candidate key.
+    """
+    merged = list(constraints)
+    seen = {frozenset(u) for u in constraints}
+    if primary_key:
+        seen.add(frozenset(primary_key))
+    for cols in indexes:
+        if frozenset(cols) not in seen:
+            seen.add(frozenset(cols))
+            merged.append(cols)
+    return merged
+
+
 def normalize_source_type(source_type: str | None) -> str:
     """Canonicalize a source-type string.
 

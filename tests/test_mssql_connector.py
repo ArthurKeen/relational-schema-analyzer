@@ -217,6 +217,10 @@ def _scol(name, dtype, nullable, default, ordinal):
     }
 
 
+# Unique indexes backing no constraint (sys.indexes query); patched per test.
+_MSSQL_UNIQUE_INDEXES: dict[str, list[dict]] = {}
+
+
 def _mssql_resolve(sql: str, params: tuple):
     s = " ".join(sql.upper().split())
     table = params[1] if len(params) >= 2 else None
@@ -250,6 +254,8 @@ def _mssql_resolve(sql: str, params: tuple):
             return [{"CONSTRAINT_NAME": "email_uq", "COLUMN_NAME": "email",
                      "ORDINAL_POSITION": 1}]
         return []
+    if "SYS.INDEXES" in s:
+        return list(_MSSQL_UNIQUE_INDEXES.get(table, []))
     if "SYS.CHECK_CONSTRAINTS" in s:
         return []
     if "MINOR_ID = 0" in s:
@@ -309,3 +315,20 @@ class TestEnrichmentConformance:
         assert conf._find_col(users, "email").comment == "contact email"
         assert users.comment == "people"
         assert conf._find_table(schema, "active_users").is_view is True
+
+
+def test_unique_indexes_become_candidate_keys_once(monkeypatch):
+    _install_fake_pymssql(monkeypatch, lambda **kw: _EnrichedConn())
+    monkeypatch.setitem(
+        _MSSQL_UNIQUE_INDEXES,
+        "users",
+        [
+            {"INDEX_NAME": "ix_status_created", "COLUMN_NAME": "status", "key_ordinal": 1},
+            {"INDEX_NAME": "ix_status_created", "COLUMN_NAME": "created_at", "key_ordinal": 2},
+            {"INDEX_NAME": "ix_email_dup", "COLUMN_NAME": "email", "key_ordinal": 1},
+        ],
+    )
+    users = SQLServerConnector("mssql://u:p@h/shop").get_schema().tables["users"]
+
+    assert users.unique_constraints == [["email"], ["status", "created_at"]]
+    assert {c.name for c in users.columns if c.is_unique} == {"id", "email"}

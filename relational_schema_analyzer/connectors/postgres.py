@@ -350,7 +350,7 @@ class PostgresConnector:
         )
         pks = [row["column_name"] for row in cur.fetchall()]
 
-        unique_sets = self._fetch_unique_constraints(cur, table_name)
+        unique_sets = self._fetch_unique_constraints(cur, table_name, pks)
         single_unique = {u[0] for u in unique_sets if len(u) == 1}
         if len(pks) == 1:
             single_unique.add(pks[0])
@@ -434,7 +434,10 @@ class PostgresConnector:
         )
 
     def _fetch_unique_constraints(
-        self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str
+        self,
+        cur: "psycopg.Cursor[dict[str, Any]]",
+        table_name: str,
+        primary_key: list[str] | None = None,
     ) -> list[list[str]]:
         cur.execute(
             """
@@ -453,6 +456,63 @@ class PostgresConnector:
         grouped: OrderedDict[str, list[str]] = OrderedDict()
         for row in cur.fetchall():
             grouped.setdefault(row["constraint_name"], []).append(row["column_name"])
+        from .base import merge_unique_sets
+
+        return merge_unique_sets(
+            list(grouped.values()), self._fetch_unique_indexes(cur, table_name), primary_key or []
+        )
+
+    def _fetch_unique_indexes(
+        self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str
+    ) -> list[list[str]]:
+        """Key columns of unique indexes that back no constraint.
+
+        ``CREATE UNIQUE INDEX`` guarantees uniqueness exactly as a ``UNIQUE``
+        constraint does, but it is not a constraint, so it never appears in
+        ``information_schema.table_constraints`` -- and FK inference, which targets
+        only declared candidate keys, could not see it. pagila's
+        ``store.manager_staff_id`` is one.
+
+        Only indexes that make a column set a key qualify. Excluded:
+        partial indexes (``WHERE``: unique only over a subset of rows), expression
+        indexes (``lower(email)``: the key is a function, not the column), invalid
+        indexes (a failed ``CREATE INDEX CONCURRENTLY``), ``INCLUDE`` columns
+        (stored, not part of the key), and any index already backing a PK, UNIQUE
+        or exclusion constraint (reported by the constraint query).
+
+        Only those three constraint types are matched on ``conindid``: a FOREIGN
+        KEY's ``conindid`` is the *referenced* table's unique index, so matching
+        every constraint would drop exactly the indexes foreign keys point at.
+        ``indnkeyatts`` (key columns, excluding ``INCLUDE``) exists from
+        PostgreSQL 11; older servers have no ``INCLUDE``, so every column is a key.
+        """
+        info = getattr(getattr(cur, "connection", None), "info", None)
+        version = getattr(info, "server_version", 0) or 0
+        key_atts = "i.indnkeyatts" if not version or version >= 110000 else "i.indnatts"
+        cur.execute(
+            f"""
+            SELECT ix.relname AS index_name, a.attname AS column_name, k.ord
+            FROM pg_index i
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class ix ON ix.oid = i.indexrelid
+            CROSS JOIN LATERAL unnest((i.indkey::int2[])[0:{key_atts} - 1])
+                WITH ORDINALITY AS k(attnum, ord)
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+            WHERE i.indisunique AND NOT i.indisprimary AND i.indisvalid
+              AND i.indpred IS NULL AND i.indexprs IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_constraint c
+                  WHERE c.conindid = i.indexrelid AND c.contype IN ('p', 'u', 'x')
+              )
+              AND n.nspname = %s AND t.relname = %s
+            ORDER BY ix.relname, k.ord;
+            """,  # noqa: S608 - key_atts is one of two fixed column names
+            (self.schema_name, table_name),
+        )
+        grouped: OrderedDict[str, list[str]] = OrderedDict()
+        for row in cur.fetchall():
+            grouped.setdefault(row["index_name"], []).append(row["column_name"])
         return list(grouped.values())
 
     def _fetch_check_constraints(
