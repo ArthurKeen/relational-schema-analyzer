@@ -15,7 +15,7 @@ Each dialect builds the same table and asserts exactly which column sets become 
     lower(email)     expression / functional unique index    -> NOT a key (Postgres, MySQL)
     ext, lower(note) mixed column + expression unique index  -> NOT a key on ext alone
                      (MySQL lists only the plain column, so this was misreported
-                     before 0.8.1; Postgres needs its ``indexprs`` filter for it)
+                     before 0.9.0; Postgres needs its ``indexprs`` filter for it)
     handle           ...and a FOREIGN KEY elsewhere references it -> still a key
                      (Postgres records the referenced index on the FK constraint)
     id               unique index repeating the primary key  -> NOT a second key

@@ -330,13 +330,35 @@ projection — the whole core (Phases 0–5) landed together in the first releas
   pre-existing request-contract drift: the published request schema described an entrypoint
   RSA does not have, so every real request was invalid against RSA's own contract.
 
+- **v0.9.0** — **keys for sources that declare none.** Snowflake (by habit) and lakes and
+  warehouses (by design) declare few or no keys, and FK inference targets only declared
+  candidate keys, so those sources yielded no relationships at all.
+  - *Unique indexes are candidate keys* (Postgres, SQL Server; MySQL already reported them).
+    Partial, expression, invalid, hypothetical and computed-column indexes are excluded, and
+    an index repeating a constraint or the primary key is not counted twice. Fixes MySQL
+    functional-index keys, which were reported on their plain column alone. **Output
+    change:** a schema with constraint-less unique indexes now lists them in
+    `unique_constraints`, so its fingerprint changes once on upgrade.
+  - *Cost-governed Snowflake value sampler* (`SnowflakeValueSampler`): FK overlap evidence
+    under a query budget, a per-query timeout and a query tag, with overlap measured against
+    the whole referenced column. Snowflake key-pair authentication (ported from `r2g`),
+    with credentials masked in connection errors and kept out of tracebacks.
+  - *Primary keys proposed from data* (`profile_primary_keys`): screened on a sample,
+    confirmed over the whole table, ranked on naming and type with the reasons kept. A table
+    whose search was not finished is reported as not evaluated, never as keyless.
+  - *Draft key overlays* (`draft_key_overlay`): proposed primary keys plus the foreign keys
+    inference finds once those keys exist, as an overlay a person reviews and then applies.
+    Nothing is applied automatically. On `r2g`'s constraint-free Customer 360 schema the
+    draft matches the hand-reviewed overlay exactly (5/5 primary keys, 6/6 foreign keys).
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
   `mcp.server.fastmcp` in favour of a new `MCPServer` API (FastMCP moved to its own package).
   `mcp_server.py` targets the 1.x FastMCP API. Porting it is a contained piece of work; until
   then the pin is what keeps the extra installable.
-- **v0.9.0 (target; was v0.8.0 until bitemporal stamping took that number)** — the
+- **v0.10.0 (target; was v0.9.0 until key discovery took that number, and v0.8.0 before
+  bitemporal stamping took that one)** — the
   **BigQuery** connector with its cost governor (see
   [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
   Northwind); the downstream `r2g` and `arango-ontoextract` integration PRs; shared contract
