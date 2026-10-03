@@ -260,3 +260,117 @@ def _profile_table(
 
     found.sort(key=lambda k: (-k.score, len(k.columns), k.columns))
     profile.candidates[table.name] = found
+
+
+# ── Draft key overlay ────────────────────────────────────────────────────────
+
+
+@dataclass
+class DraftOverlay:
+    """A reviewable key overlay plus the evidence behind every entry in it.
+
+    ``overlay`` is a valid key overlay (``overlay.load_key_overlay`` format): a
+    person edits it -- deletes what is wrong, adds what was missed -- and applies
+    it like any hand-written one. Nothing here is applied to a schema.
+    """
+
+    overlay: dict[str, Any]
+    primary_keys: dict[str, KeyCandidate] = field(default_factory=dict)
+    foreign_keys: list[Any] = field(default_factory=list)
+    no_key_proposed: dict[str, str] = field(default_factory=dict)
+
+
+def draft_key_overlay(
+    schema: Schema,
+    probe: KeyProbe,
+    *,
+    sampler: Any = None,
+    tables: Optional[Sequence[str]] = None,
+    min_pk_score: float = 0.3,
+    min_fk_confidence: float = 0.6,
+    max_pair_checks: int = 10,
+) -> DraftOverlay:
+    """Propose primary and foreign keys as a draft overlay for human review.
+
+    1. Primary keys: the best :func:`profile_primary_keys` candidate per table,
+       if it scores at least ``min_pk_score``. Every other candidate is listed in
+       the table's ``description`` so the reviewer sees the alternatives.
+    2. Foreign keys: FK inference run against the schema *with those proposed
+       keys applied* -- without them a key-less source gives inference no
+       targets. When ``sampler`` is given (``probe`` usually doubles as it),
+       value overlap adjusts confidence and a zero overlap vetoes the candidate.
+    3. The draft is applied to a copy of ``schema`` before it is returned, so a
+       draft that would not load is a bug here, never a surprise for the reviewer.
+    """
+    from .fk_inference import InferenceOptions, infer_foreign_keys
+    from .overlay import apply_key_overlay
+
+    profile = profile_primary_keys(schema, probe, tables=tables, max_pair_checks=max_pair_checks)
+    draft = DraftOverlay(overlay={})
+    specs: dict[str, dict[str, Any]] = {}
+
+    for tname in profile.declared:
+        draft.no_key_proposed[tname] = "the source already declares a primary key"
+    draft.no_key_proposed.update(profile.not_evaluated)
+    for tname, ranked in profile.candidates.items():
+        best = ranked[0] if ranked else None
+        if best is None:
+            draft.no_key_proposed[tname] = "no column or column pair is non-null and unique"
+            continue
+        if best.score < min_pk_score:
+            draft.no_key_proposed[tname] = (
+                f"best candidate {list(best.columns)} scored {best.score:.2f}, "
+                f"below {min_pk_score:.2f}"
+            )
+            continue
+        draft.primary_keys[tname] = best
+        lines = [
+            f"Proposed key {list(best.columns)} (score {best.score:.2f}): "
+            + "; ".join(best.reasons)
+            + ".",
+        ]
+        if len(ranked) > 1:
+            lines.append(
+                "Also unique: "
+                + ", ".join(f"{list(k.columns)} ({k.score:.2f})" for k in ranked[1:])
+                + "."
+            )
+        specs[tname] = {"primaryKey": list(best.columns), "description": " ".join(lines)}
+
+    # FK inference needs targets: give it the proposed keys.
+    keyed = apply_key_overlay(
+        schema,
+        {"version": 1, "tables": {t: {"primaryKey": s["primaryKey"]} for t, s in specs.items()}},
+    )
+    options = InferenceOptions(sample_overlap=sampler is not None)
+    for fk in infer_foreign_keys(keyed, options=options, sampler=sampler):
+        if fk.confidence < min_fk_confidence:
+            continue
+        table = keyed.tables[fk.table]
+        if any(
+            {c.lower() for c in d.columns} == {c.lower() for c in fk.columns}
+            for d in table.foreign_keys
+        ):
+            continue  # declared by the source already
+        draft.foreign_keys.append(fk)
+        specs.setdefault(fk.table, {}).setdefault("foreignKeys", []).append(
+            {
+                "columns": list(fk.columns),
+                "references": {"table": fk.foreign_table, "columns": list(fk.foreign_columns)},
+                "comment": f"Inferred (confidence {fk.confidence:.2f}, {fk.method}): "
+                + "; ".join(fk.evidence)
+                + ".",
+            }
+        )
+
+    draft.overlay = {
+        "version": 1,
+        "description": (
+            "DRAFT key overlay proposed from data by relational-schema-analyzer -- review "
+            "before use. Every key here is a proposal: delete what is wrong, add what was "
+            "missed. Applied keys are marked enforced=false."
+        ),
+        "tables": specs,
+    }
+    apply_key_overlay(schema, draft.overlay)  # must load; raises OverlayError if not
+    return draft
