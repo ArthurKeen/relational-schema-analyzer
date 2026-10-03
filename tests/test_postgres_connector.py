@@ -173,3 +173,16 @@ def test_unique_indexes_become_candidate_keys_once(monkeypatch):
     assert users.unique_constraints == [["email"], ["status", "created_at"]]
     # Composite members are not single-column keys.
     assert {c.name for c in users.columns if c.is_unique} == {"id", "email"}
+
+
+def test_merge_unique_sets_never_repeats_the_primary_key():
+    # A CREATE UNIQUE INDEX on the PK columns is not a second candidate key;
+    # an index on a new column set is, once; declared constraints keep their order.
+    from relational_schema_analyzer.connectors.base import merge_unique_sets
+
+    merged = merge_unique_sets(
+        [["code"]],
+        [["id"], ["code"], ["region", "ext"], ["ext", "region"]],
+        ["id"],
+    )
+    assert merged == [["code"], ["region", "ext"]]

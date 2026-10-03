@@ -298,7 +298,7 @@ class SQLServerConnector:
             )
             pks = [row["COLUMN_NAME"] for row in cur.fetchall()]
 
-            unique_sets = self._fetch_unique_constraints(cur, table_name)
+            unique_sets = self._fetch_unique_constraints(cur, table_name, pks)
             checks = self._fetch_check_constraints(cur, table_name)
             col_comments = self._fetch_column_comments(cur, table_name)
             table_comment = self._fetch_table_comment(cur, table_name)
@@ -387,7 +387,9 @@ class SQLServerConnector:
             check_constraints=checks,
         )
 
-    def _fetch_unique_constraints(self, cur: Any, table_name: str) -> list[list[str]]:
+    def _fetch_unique_constraints(
+        self, cur: Any, table_name: str, primary_key: list[str] | None = None
+    ) -> list[list[str]]:
         cur.execute(
             """
             SELECT tc.CONSTRAINT_NAME, kcu.COLUMN_NAME, kcu.ORDINAL_POSITION
@@ -404,13 +406,11 @@ class SQLServerConnector:
         grouped: OrderedDict[str, list[str]] = OrderedDict()
         for row in cur.fetchall():
             grouped.setdefault(row["CONSTRAINT_NAME"], []).append(row["COLUMN_NAME"])
-        unique_sets = list(grouped.values())
-        seen = {frozenset(u) for u in unique_sets}
-        for cols in self._fetch_unique_indexes(cur, table_name):
-            if frozenset(cols) not in seen:
-                seen.add(frozenset(cols))
-                unique_sets.append(cols)
-        return unique_sets
+        from .base import merge_unique_sets
+
+        return merge_unique_sets(
+            list(grouped.values()), self._fetch_unique_indexes(cur, table_name), primary_key or []
+        )
 
     def _fetch_unique_indexes(self, cur: Any, table_name: str) -> list[list[str]]:
         """Key columns of unique indexes that back no constraint.
@@ -418,9 +418,12 @@ class SQLServerConnector:
         ``CREATE UNIQUE INDEX`` enforces uniqueness like a ``UNIQUE`` constraint but
         is not listed in ``INFORMATION_SCHEMA.TABLE_CONSTRAINTS``, so FK inference
         could not target it. Excluded: filtered indexes (``WHERE``: unique only over
-        a subset of rows), disabled indexes, ``INCLUDE`` columns (stored, not key),
-        and indexes backing a PK or UNIQUE constraint (reported by the constraint
-        query). SQL Server indexes cannot be on expressions, only on columns.
+        a subset of rows), disabled indexes, hypothetical indexes (left by the
+        Database Engine Tuning Advisor; they hold no data and enforce nothing),
+        ``INCLUDE`` columns (stored, not key), indexes backing a PK or UNIQUE
+        constraint (reported by the constraint query), and any index with a
+        computed column in its key -- ``LOWER(email)`` as a computed column is an
+        expression key, which PostgreSQL rejects too.
         """
         cur.execute(
             """
@@ -434,7 +437,15 @@ class SQLServerConnector:
             JOIN sys.schemas s ON s.schema_id = t.schema_id
             WHERE i.is_unique = 1 AND i.is_primary_key = 0
               AND i.is_unique_constraint = 0 AND i.has_filter = 0
-              AND i.is_disabled = 0 AND ic.is_included_column = 0
+              AND i.is_disabled = 0 AND i.is_hypothetical = 0
+              AND ic.is_included_column = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM sys.index_columns kc
+                  JOIN sys.columns cc
+                    ON cc.object_id = kc.object_id AND cc.column_id = kc.column_id
+                  WHERE kc.object_id = i.object_id AND kc.index_id = i.index_id
+                    AND kc.is_included_column = 0 AND cc.is_computed = 1
+              )
               AND s.name = %s AND t.name = %s
             ORDER BY i.name, ic.key_ordinal
             """,
