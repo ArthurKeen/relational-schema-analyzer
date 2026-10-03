@@ -81,6 +81,7 @@ def test_budget_exhaustion_returns_none_and_stops_querying(conn):
         "max_queries": 1,
         "cache_hits": 0,
         "budget_exhausted": True,
+        "connect_failed": False,
     }
     assert s.distinct_ratio("PARENT", "ID") is None
     assert s.stats["queries_run"] == 1
@@ -130,16 +131,112 @@ def test_factory_returns_a_governed_sampler():
     assert s.max_queries >= 1 and s.statement_timeout_s >= 1
 
 
-def test_values_are_normalised_the_way_to_varchar_renders_them():
-    from decimal import Decimal
+@pytest.mark.parametrize(
+    ("ddl_type", "parent_expr", "child_expr"),
+    [
+        # Python prints 1e16 as "10000000000000000", Snowflake as "1e+16".
+        ("DOUBLE", "1e16 + seq4()", "1e16 + 250 + MOD(seq4(), 50)"),
+        # Python prints True as "True", Snowflake as "true".
+        ("BOOLEAN", "MOD(seq4(), 2) = 0", "TRUE"),
+    ],
+)
+def test_server_side_overlap_agrees_with_client_side_for_any_type(conn, ddl_type, parent_expr, child_expr):
+    """Both sides must be rendered by Snowflake, or a large referenced column scores 0.
 
-    norm = SnowflakeValueSampler._norm
-    assert norm(42) == "42"
-    assert norm(Decimal("42")) == "42"
-    # A scaled NUMBER keeps its scale under TO_VARCHAR; collapsing it to "42"
-    # would make the server-side membership test miss every such key.
-    assert norm(Decimal("42.00")) == "42.00"
-    # Integral floats are the one case Python and Snowflake render differently.
-    assert norm(42.0) == "42"
-    assert norm(1.5) == "1.5"
-    assert norm("ABC") == "ABC"
+    The large parent forces the server-side membership test; the small one the
+    client-side comparison. A real reference must score 1.0 either way.
+    """
+    cur = conn.cursor()
+    cur.execute(f"CREATE TABLE BIG_P (K {ddl_type})")
+    cur.execute(f"INSERT INTO BIG_P SELECT {parent_expr} FROM TABLE(GENERATOR(ROWCOUNT => 300))")
+    cur.execute(f"CREATE TABLE SMALL_P (K {ddl_type})")
+    cur.execute("INSERT INTO SMALL_P SELECT DISTINCT K FROM BIG_P")
+    cur.execute(f"CREATE TABLE C (K {ddl_type})")
+    cur.execute(f"INSERT INTO C SELECT {child_expr} FROM TABLE(GENERATOR(ROWCOUNT => 60))")
+    cur.close()
+    s = _sampler(conn)
+    assert s("C", "K", "SMALL_P", "K") == pytest.approx(1.0)
+    if ddl_type == "BOOLEAN":
+        # A boolean column never exceeds the bound, so mark the parent's fetched
+        # set incomplete to drive the server-side path with the same data.
+        s._distinct_cache[("BIG_P", "K")] = (frozenset(), False)
+    assert s("C", "K", "BIG_P", "K") == pytest.approx(1.0)
+
+
+class _Recording:
+    """Wraps a connection, recording every statement and execute() keyword."""
+
+    def __init__(self, conn):
+        self._conn, self.statements, self.kwargs = conn, [], []
+
+    def cursor(self):
+        rec, cur = self, self._conn.cursor()
+
+        class _Cur:
+            def execute(self, sql, params=None, **kw):
+                rec.statements.append(sql)
+                rec.kwargs.append(kw)
+                return cur.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(cur, name)
+
+        return _Cur()
+
+    def close(self):
+        self._conn.close()
+
+
+def test_a_supplied_connections_session_is_never_altered(conn):
+    rec = _Recording(conn)
+    s = SnowflakeValueSampler(connection=rec, schema_name="PUBLIC", limit=100, statement_timeout_s=7)
+    s("CHILD", "PARENT_ID", "SMALL_PARENT", "ID")
+    assert not any(st.upper().startswith("ALTER SESSION") for st in rec.statements)
+    # ...but every probe still carries its own time limit.
+    assert rec.kwargs and all(kw.get("timeout") == 7 for kw in rec.kwargs)
+
+
+def _owned_sampler(monkeypatch, connect):
+    import snowflake.connector as sc
+
+    monkeypatch.setattr(sc, "connect", connect)
+    return SnowflakeValueSampler("snowflake://u:p@acct/DB1/PUBLIC", limit=100)
+
+
+def test_a_failed_login_is_attempted_once_per_sampler(monkeypatch):
+    attempts = []
+
+    def connect(**params):
+        attempts.append(params)
+        raise RuntimeError("Incorrect username or password was specified.")
+
+    s = _owned_sampler(monkeypatch, connect)
+    for _ in range(5):
+        assert s("CHILD", "PARENT_ID", "PARENT", "ID") is None
+    assert s.distinct_ratio("PARENT", "ID") is None
+    assert len(attempts) == 1
+    assert s.stats["connect_failed"] is True and s.stats["queries_run"] == 0
+
+
+def test_session_settings_are_reapplied_after_close(conn, monkeypatch):
+    opened = []
+
+    def connect(**params):
+        opened.append(_Recording(conn))
+        return opened[-1]
+
+    s = _owned_sampler(monkeypatch, connect)
+    s.distinct_ratio("PARENT", "ID")
+    opened[0].close = lambda: None  # keep the shared fakesnow connection open
+    s.close()
+    s.distinct_ratio("PARENT", "ID")
+    assert len(opened) == 2
+    for rec in opened:
+        assert any("STATEMENT_TIMEOUT_IN_SECONDS" in st for st in rec.statements)
+
+
+def test_a_failing_column_is_queried_once(conn):
+    s = _sampler(conn)
+    for _ in range(4):
+        assert s("NO_SUCH_TABLE", "X", "PARENT", "ID") is None
+    assert s.stats["queries_run"] == 1

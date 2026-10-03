@@ -1804,11 +1804,16 @@ class SnowflakeValueSampler:
     distinct values fit the bound they are compared client-side, otherwise the
     sampled local values are checked server-side against the full column.
     (Comparing against an arbitrary ``LIMIT``-ed slice of a large foreign table
-    scores a valid FK near zero.) Values are compared as text: Python ``str``
-    client-side, ``TO_VARCHAR`` server-side (see :meth:`_norm`).
+    scores a valid FK near zero.) Values are compared as text that Snowflake
+    renders with ``TO_VARCHAR`` on both sides, so the client-side and server-side
+    paths agree for every column type.
 
-    Pass ``connection_string`` (password or key-pair URL) or an open
-    ``connection``; a supplied connection is used as-is and not closed.
+    Pass ``connection_string`` (password, key-pair or ``authenticator`` URL) or an
+    open ``connection``. A supplied connection is used as-is: its session
+    settings are never changed and it is not closed. Every probe carries a
+    per-query ``timeout``, so the time limit holds on either kind of connection
+    even when session settings cannot be applied. A failed connection is tried
+    once per sampler, never once per probe.
     """
 
     def __init__(
@@ -1836,6 +1841,7 @@ class SnowflakeValueSampler:
         self._conn = connection
         self._owns_conn = connection is None
         self._session_ready = False
+        self._connect_error: str | None = None
         self._connect_params: dict[str, Any] = {}
         self.schema_name = schema_name.upper() if schema_name else "PUBLIC"
         if connection_string:
@@ -1845,7 +1851,9 @@ class SnowflakeValueSampler:
             url_schema = self._connect_params.pop("_url_schema", None)
             if url_schema and schema_name in (None, "", "public", "PUBLIC"):
                 self.schema_name = url_schema.upper()
-        self._distinct_cache: dict[tuple[str, str], tuple[frozenset[str], bool]] = {}
+        # A column whose fetch failed is cached as None, so it is not re-queried
+        # (and re-charged to the budget) for every candidate pair touching it.
+        self._distinct_cache: dict[tuple[str, str], tuple[frozenset[str], bool] | None] = {}
         self.queries_run = 0
         self.cache_hits = 0
         self.budget_exhausted = False
@@ -1860,6 +1868,7 @@ class SnowflakeValueSampler:
                 pass
         if self._owns_conn:
             self._conn = None
+            self._session_ready = False
 
     def __enter__(self) -> "SnowflakeValueSampler":
         return self
@@ -1875,6 +1884,7 @@ class SnowflakeValueSampler:
             "max_queries": self.max_queries,
             "cache_hits": self.cache_hits,
             "budget_exhausted": self.budget_exhausted,
+            "connect_failed": self._connect_error is not None,
         }
 
     def _conn_lazy(self) -> Any:
@@ -1887,14 +1897,18 @@ class SnowflakeValueSampler:
             try:
                 self._conn = snowflake.connect(**params)
             except Exception as err:
+                # ``from None``: the driver's original error can echo the password
+                # or key path, and a chained __cause__ is printed by any traceback.
                 raise RuntimeError(
                     f"Failed to connect to Snowflake: {_safe_connection_error(err, params)}"
-                ) from err
-        if not self._session_ready:
+                ) from None
+        if self._owns_conn and not self._session_ready:
             self._session_ready = True
             # Session settings are metadata statements (no warehouse), so they are
-            # not charged to the probe budget. Best-effort: an emulator may not
-            # support them, and a missing tag must not disable sampling.
+            # not charged to the probe budget. Only applied to a connection the
+            # sampler opened: a caller's session is never altered. Best-effort --
+            # the per-query ``timeout`` in :meth:`_run` bounds every probe even
+            # if these fail -- but a failure is a warning, not a footnote.
             for stmt in (
                 f"ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = {self.statement_timeout_s}",
                 "ALTER SESSION SET QUERY_TAG = '" + self.query_tag.replace("'", "''") + "'",
@@ -1906,7 +1920,7 @@ class SnowflakeValueSampler:
                     finally:
                         cur.close()
                 except Exception as err:  # noqa: BLE001
-                    logger.info("snowflake_sampler_session_setting_skipped", error=str(err))
+                    logger.warning("snowflake_sampler_session_setting_skipped", error=str(err))
         return self._conn
 
     # ── governed execution ──
@@ -1922,16 +1936,25 @@ class SnowflakeValueSampler:
                     hint="remaining probes return None; inference falls back to names",
                 )
             return None
+        if self._connect_error is not None:
+            return None
         try:
             conn = self._conn_lazy()
         except Exception as err:  # noqa: BLE001
-            logger.warning("fk_sampler_connect_failed", error=str(err))
+            # One attempt per sampler: retrying per probe turns a bad credential
+            # into hundreds of failed logins, enough to lock the service user out.
+            self._connect_error = str(err)
+            logger.warning(
+                "fk_sampler_connect_failed",
+                error=self._connect_error,
+                hint="remaining probes return None without reconnecting",
+            )
             return None
         self.queries_run += 1
         try:
             cur = conn.cursor()
             try:
-                cur.execute(sql, params)
+                cur.execute(sql, params, timeout=self.statement_timeout_s)
                 return list(cur.fetchall())
             finally:
                 cur.close()
@@ -1946,34 +1969,29 @@ class SnowflakeValueSampler:
     def _table(self, table: str) -> str:
         return f"{self._ident(self.schema_name)}.{self._ident(table)}"
 
-    @staticmethod
-    def _norm(value: Any) -> str:
-        """Render a value as ``TO_VARCHAR`` does, so client- and server-side agree.
-
-        ``str`` already matches for integers, strings and decimals -- including
-        scaled ones: ``NUMBER(10,2)`` arrives as ``Decimal("42.00")`` and
-        ``TO_VARCHAR`` keeps ``"42.00"``, so it must not be collapsed to ``"42"``.
-        Integral floats are the exception: Python prints ``42.0``, Snowflake ``42``.
-        """
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
-        return str(value)
-
     def _distinct(self, table: str, column: str) -> tuple[frozenset[str], bool] | None:
-        """Bounded distinct non-null values of a column, cached; flag = complete set."""
+        """Bounded distinct non-null values of a column, cached; flag = complete set.
+
+        Values come back as Snowflake's ``TO_VARCHAR`` text -- the same rendering
+        the server-side membership test uses -- so timestamps, booleans and large
+        floats compare equal on both paths. (Rendering them in Python instead
+        gives ``True`` vs ``true`` and ``10000000000000000`` vs ``1e+16``.)
+        """
         key = (table, column)
         if key in self._distinct_cache:
             self.cache_hits += 1
             return self._distinct_cache[key]
         col = self._ident(column)
         rows = self._run(
-            f"SELECT DISTINCT {col} FROM {self._table(table)} WHERE {col} IS NOT NULL LIMIT %s",  # noqa: S608 - quoted identifiers from the catalog
+            f"SELECT DISTINCT TO_VARCHAR({col}) FROM {self._table(table)} WHERE {col} IS NOT NULL LIMIT %s",  # noqa: S608 - quoted identifiers from the catalog
             (self.limit + 1,),
         )
         if rows is None:
+            if not self.budget_exhausted and self._connect_error is None:
+                self._distinct_cache[key] = None  # the query itself failed
             return None
         values = [r[0] for r in rows]
-        result = (frozenset(self._norm(v) for v in values[: self.limit]), len(values) <= self.limit)
+        result = (frozenset(values[: self.limit]), len(values) <= self.limit)
         self._distinct_cache[key] = result
         return result
 

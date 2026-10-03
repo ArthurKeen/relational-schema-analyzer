@@ -327,8 +327,18 @@ class TestKeyPairAuthentication:
             _parse_snowflake_url("snowflake://svc:@xy12345/ANALYTICS?private_key_file_pwd=x")
 
     def test_missing_authentication_method_is_rejected(self):
-        with pytest.raises(ValueError, match="requires a password or private_key_file"):
+        with pytest.raises(ValueError, match="requires a password, private_key_file or authenticator"):
             _parse_snowflake_url("snowflake://svc:@xy12345/ANALYTICS")
+
+    def test_sso_authenticator_needs_no_password(self):
+        # Browser SSO carries no secret in the URL; it parsed before key-pair
+        # support and must keep parsing.
+        kw = _parse_snowflake_url(
+            "snowflake://alice@xy12345/ANALYTICS/CORE?warehouse=WH&authenticator=externalbrowser"
+        )
+        assert kw["authenticator"] == "externalbrowser"
+        assert kw["user"] == "alice" and kw["warehouse"] == "WH"
+        assert "password" not in kw and "private_key_file" not in kw
 
     def test_private_key_file_must_exist(self, tmp_path):
         from urllib.parse import urlencode
@@ -355,3 +365,10 @@ class TestKeyPairAuthentication:
             SnowflakeConnector(f"snowflake://svc:@xy12345/ANALYTICS?{query}").get_schema()
         assert str(key_path) not in str(exc.value)
         assert passphrase not in str(exc.value)
+        # The unmasked driver error must not ride along as __cause__/__context__:
+        # a formatted traceback (CLI crash, logger.exception) prints the chain.
+        import traceback
+
+        printed = "".join(traceback.format_exception(exc.value))
+        assert str(key_path) not in printed
+        assert passphrase not in printed
