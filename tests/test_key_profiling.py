@@ -35,6 +35,21 @@ _DDL = [
     "CREATE TABLE TINY (THING_ID INT)",
     "INSERT INTO TINY VALUES (1), (2), (3)",
     "CREATE TABLE EMPTY_T (E_ID INT)",
+    # Six identifier-like columns, 15 pairs; only the last pair, (E_ID, F_ID), is a key.
+    "CREATE TABLE WIDE (A_ID INT, B_ID INT, C_ID INT, D_ID INT, E_ID INT, F_ID INT)",
+    "INSERT INTO WIDE SELECT MOD(seq4(), 2), MOD(seq4(), 2), MOD(seq4(), 2), MOD(seq4(), 2),"
+    " FLOOR(seq4() / 5) + 1, MOD(seq4(), 5) + 1 " + _GEN.format(n=40),
+    # Case-folded camelCase keys (orderId -> ORDERID): no underscore, but named after tables.
+    "CREATE TABLE ITEMS_BY_ORDER (ORDERID INT, CUSTOMERID INT, QTY INT)",
+    "INSERT INTO ITEMS_BY_ORDER SELECT FLOOR(seq4() / 5) + 1, MOD(seq4(), 5) + 1, 1 "
+    + _GEN.format(n=40),
+    # ACCOUNT and ACCOUNTS singularize alike; ACCOUNT_ID is ACCOUNT's own key.
+    "CREATE TABLE ACCOUNT (ACCOUNT_ID INT, NOTE VARCHAR)",
+    "INSERT INTO ACCOUNT SELECT seq4() + 1, 'n' || MOD(seq4(), 3) " + _GEN.format(n=20),
+    "CREATE TABLE ACCOUNTS (X INT)",
+    # singularize mangles ORDER_STATUS into ORDER_STATU.
+    "CREATE TABLE ORDER_STATUS (LABEL_CODE VARCHAR, ORDER_STATUS_ID INT)",
+    "INSERT INTO ORDER_STATUS SELECT 'L' || seq4(), seq4() + 1 " + _GEN.format(n=20),
     # A key plus another identifier: (ORDER_ID, CUSTOMER_ID) is unique only
     # because ORDER_ID is -- a superkey, which must not be reported as a key.
     "CREATE TABLE ORDERS (ORDER_ID INT, CUSTOMER_ID INT)",
@@ -207,3 +222,53 @@ def test_a_column_named_after_another_table_loses_to_the_real_key(env):
     ranked = profile_primary_keys(schema, _probe(conn), tables=["SESSIONS"]).candidates["SESSIONS"]
     assert [k.columns[0] for k in ranked] == ["SESSION_KEY", "CUSTOMER_ID"]
     assert "named after another table (CUSTOMERS), so likely a reference to it" in ranked[1].reasons
+
+
+def test_a_declined_composite_probe_leaves_the_table_undecided(env):
+    # The sample uses the whole budget; every pair probe then declines. That is
+    # "could not check", never "has no key".
+    schema, conn = env
+    profile = profile_primary_keys(schema, _probe(conn, max_queries=1), tables=["ORDER_LINES"])
+    assert "ORDER_LINES" in profile.not_evaluated
+    assert "ORDER_LINES" not in profile.candidates
+
+
+def test_a_truncated_pair_search_is_reported_not_called_keyless(env):
+    schema, conn = env
+    profile = profile_primary_keys(schema, _probe(conn), tables=["WIDE"], max_pair_checks=10)
+    assert "WIDE" not in profile.candidates
+    assert "10 of 15" in profile.not_evaluated["WIDE"]
+    found = profile_primary_keys(schema, _probe(conn), tables=["WIDE"], max_pair_checks=15)
+    assert found.best("WIDE").columns == ("E_ID", "F_ID")
+
+
+def test_case_folded_camel_case_keys_are_identifiers(env):
+    schema, conn = env
+    profile = profile_primary_keys(schema, _probe(conn), tables=["ITEMS_BY_ORDER"])
+    assert profile.best("ITEMS_BY_ORDER").columns == ("ORDERID", "CUSTOMERID")
+
+
+@pytest.mark.parametrize("accounts_is_view", [False, True])
+def test_a_tables_own_key_is_never_treated_as_a_reference(env, accounts_is_view):
+    schema, conn = env
+    schema.tables["ACCOUNTS"].is_view = accounts_is_view
+    best = profile_primary_keys(schema, _probe(conn), tables=["ACCOUNT"]).best("ACCOUNT")
+    assert best.columns == ("ACCOUNT_ID",)
+    assert not any("another table" in r for r in best.reasons)
+
+
+def test_own_name_matches_tables_singularize_mangles(env):
+    schema, conn = env
+    best = profile_primary_keys(schema, _probe(conn), tables=["ORDER_STATUS"]).best("ORDER_STATUS")
+    assert best.columns == ("ORDER_STATUS_ID",)
+    assert "named after its table (ORDER_STATUS -> ORDER_STATUS_ID)" in best.reasons
+
+
+def test_a_declared_unique_key_is_not_reprofiled(env):
+    schema, conn = env
+    schema.tables["EVENTS"].unique_constraints = [["EVENT_ID"]]
+    probe = _probe(conn)
+    profile = profile_primary_keys(schema, probe, tables=["EVENTS"])
+    assert "EVENTS" not in profile.candidates
+    assert "UNIQUE" in profile.not_evaluated["EVENTS"]
+    assert probe.stats["queries_run"] == 0
