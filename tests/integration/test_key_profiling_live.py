@@ -45,3 +45,33 @@ def test_reviewed_primary_keys_are_rediscovered_from_data():
         assert profile.not_evaluated == {}
         # Each table was small enough for the sample to cover it: one query each.
         assert probe.stats["queries_run"] == len(REVIEWED)
+
+
+def test_draft_overlay_matches_the_reviewed_one():
+    """The whole proposal -- PKs and FKs -- against the hand-reviewed overlay.
+
+    Measured 2026-10-02: 5/5 PKs, 6/6 FKs, no false proposals, 13 queries.
+    """
+    from relational_schema_analyzer.key_profiling import draft_key_overlay
+
+    reviewed_fks = {
+        ("CONTACTS", ("ACCOUNT_ID",), "ACCOUNTS"),
+        ("EMAIL_EVENTS", ("CONTACT_ID",), "CONTACTS"),
+        ("EMAIL_EVENTS", ("ACCOUNT_ID",), "ACCOUNTS"),
+        ("ZOOM_TELEMETRY", ("CONTACT_ID",), "CONTACTS"),
+        ("ZOOM_TELEMETRY", ("ACCOUNT_ID",), "ACCOUNTS"),
+        ("HEALTH_SIGNALS", ("ACCOUNT_ID",), "ACCOUNTS"),
+    }
+    schema = SnowflakeConnector(_DSN).get_schema()
+    with SnowflakeValueSampler(_DSN, max_queries=60, statement_timeout_s=30) as probe:
+        draft = draft_key_overlay(schema, probe, sampler=probe, tables=list(REVIEWED))
+    pks = {
+        t: tuple(s["primaryKey"]) for t, s in draft.overlay["tables"].items() if "primaryKey" in s
+    }
+    fks = {
+        (t, tuple(f["columns"]), f["references"]["table"])
+        for t, s in draft.overlay["tables"].items()
+        for f in s.get("foreignKeys", [])
+    }
+    assert pks == REVIEWED
+    assert fks == reviewed_fks
