@@ -32,11 +32,15 @@ published by Snowflake themselves)::
   ``schema_name`` to the constructor wins (default ``PUBLIC``).
 - Query parameters propagate straight through to
   ``snowflake.connector.connect``.
+- Sign-in is exactly one of: a password in the URL, ``private_key_file``
+  (key-pair, optionally with ``private_key_file_pwd``), or an
+  ``authenticator`` with no password (e.g. ``externalbrowser`` for SSO).
 
 Example::
 
     snowflake://svc_r2g:xxx@xy12345.us-east-1/ANALYTICS/CORE
         ?warehouse=ETL_WH&role=R2G_READER
+    snowflake://alice@xy12345.us-east-1/ANALYTICS?authenticator=externalbrowser
 
 Missing ``snowflake-connector-python``
 --------------------------------------
@@ -128,7 +132,7 @@ class SnowflakeConnector:
         except Exception as err:
             raise RuntimeError(
                 f"Failed to connect to Snowflake: {_safe_connection_error(err, connect_kwargs)}"
-            ) from err
+            ) from None
 
         try:
             return self._introspect(conn)
@@ -507,8 +511,13 @@ def _parse_snowflake_url(url: str) -> dict[str, Any]:
         )
     if private_key_file_pwd and not private_key_file:
         raise ValueError("private_key_file_pwd requires private_key_file")
-    if not password and not private_key_file:
-        raise ValueError("Snowflake authentication requires a password or private_key_file")
+    # An ``authenticator`` (externalbrowser SSO, OAuth, ...) is a sign-in method
+    # of its own and carries no password or key; only a URL with no method at
+    # all is refused here.
+    if not password and not private_key_file and not query.get("authenticator"):
+        raise ValueError(
+            "Snowflake authentication requires a password, private_key_file or authenticator"
+        )
     if private_key_file and not Path(private_key_file).is_file():
         raise ValueError("private_key_file must name an existing file")
 
@@ -521,7 +530,7 @@ def _parse_snowflake_url(url: str) -> dict[str, Any]:
         kwargs["private_key_file"] = private_key_file
         if private_key_file_pwd:
             kwargs["private_key_file_pwd"] = private_key_file_pwd
-    else:
+    elif password:
         kwargs["password"] = password
     for key in ("warehouse", "role", "authenticator", "application"):
         if key in query:
@@ -576,7 +585,7 @@ class SnowflakeSession:
                 self._conn = snowflake.connect(**self._connect_params)
             except Exception as err:
                 safe = _safe_connection_error(err, self._connect_params)
-                raise RuntimeError(f"Failed to connect to Snowflake: {safe}") from err
+                raise RuntimeError(f"Failed to connect to Snowflake: {safe}") from None
             try:
                 cur = self._conn.cursor()
                 try:
