@@ -351,6 +351,29 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     Nothing is applied automatically. On `r2g`'s constraint-free Customer 360 schema the
     draft matches the hand-reviewed overlay exactly (5/5 primary keys, 6/6 foreign keys).
 
+- **v0.9.1** — **value samplers test overlap against the whole referenced column.** Every
+  sampler bounded *both* sides of the comparison and then joined them, so a valid foreign key
+  into a table larger than the bound was measured against an arbitrary slice of its parent.
+  Reported by `r2g` against Postgres; found in six of the seven samplers (Postgres, MySQL,
+  SQL Server, Databricks, DuckDB, CSV). On Postgres 16, with foreign keys the database itself
+  accepted as constraints — so the truth is exactly 1.0 — a 200k-row parent at the default
+  bound of 10k scored **0.05** when children were spread across the parent, and **0.00** when
+  they referenced only recent rows, which is the ordinary shape of an append-only parent:
+  `LIMIT` without `ORDER BY` returns the physically-first rows, the intersection is empty, and
+  zero is the hard veto in `_apply_sampler` — the real foreign key was not left unconfirmed, it
+  was deleted. The 0.05 case is subtler and worse: the candidate survived carrying evidence
+  reading `value overlap avg=0.05`, which reads as the data refuting it. Both score 1.000 after
+  the fix. The local side stays bounded; a sample of the child values is a fair estimate of the
+  whole. **The cause was a contract gap, not six independent mistakes:** `README` stated the
+  semantics correctly, but the `Sampler` protocol — what an implementer codes against — said
+  only that it returns a ratio in `[0, 1]`, so bounding both sides looked even-handed. The
+  asymmetry now lives in the protocol docstring, asserted behaviourally over every sampler by
+  `tests/test_sampler_contract.py`, with a registry test that fails if a new `*ValueSampler` is
+  added without appearing in it. Behavioural rather than static because `CsvValueSampler` bounds
+  with polars `n_rows` rather than SQL `LIMIT` — invisible to the grep that produced the issue,
+  caught by the test on its first run. `SnowflakeValueSampler` needed no change: it was already
+  correct (v0.9.0), which is why `r2g`'s Snowflake-only `suggest-keys` was never misled.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
