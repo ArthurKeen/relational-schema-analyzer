@@ -164,7 +164,30 @@ overlap signal rather than treating it as a veto)."""
 
 
 Sampler = Callable[[str, str, str, str], SamplerResult]
-"""``sampler(local_table, local_column, foreign_table, foreign_column)``"""
+"""``sampler(local_table, local_column, foreign_table, foreign_column)``
+
+Returns the fraction of the **local** column's distinct values that are present in
+the **referenced** column: ``|sampled local ∩ foreign| / |sampled local|``.
+
+**The two sides are not symmetric, and this is the contract's load-bearing clause.**
+Bounding the local side limits cost and costs only precision — a sample of the child
+values is a fair estimate of the whole. Bounding the *referenced* side destroys the
+measurement: a valid foreign key into a table larger than the bound is compared
+against an arbitrary slice of its parent and scores far below the truth. With
+``LIMIT`` and no ``ORDER BY`` that slice is the physically-first rows, so an
+append-only parent whose children reference recent rows scores **zero** — and zero is
+the hard veto in :func:`_apply_sampler`, which deletes the candidate outright.
+
+So: **sample the local column; test against the whole referenced column.** Five
+samplers originally bounded both sides (issue #10) because symmetry looks even-handed;
+it is not.
+
+A sampler that cannot evaluate a pair returns ``None`` ("not evaluated"), never ``0.0``
+— the engine reads zero as positive evidence of *absence*, which is a different claim.
+
+New samplers must be registered in ``tests/test_sampler_contract.py``, which asserts
+this behaviour against every sampler the module defines.
+"""
 
 
 # ── Entry point ─────────────────────────────────────────────────────
@@ -790,6 +813,9 @@ class PostgresValueSampler:
             logger.warning("fk_sampler_connect_failed", error=str(err))
             return None
 
+        # Issue #10: the local side is bounded (an estimate is fair); the referenced
+        # side is not. Comparing against a sampled parent is a different question, and
+        # a valid FK into a table larger than the bound would score near zero.
         q = f"""
             WITH l AS (
                 SELECT DISTINCT "{local_column}" AS v
@@ -800,7 +826,7 @@ class PostgresValueSampler:
             f AS (
                 SELECT DISTINCT "{foreign_column}" AS v
                 FROM "{self.schema_name}"."{foreign_table}"
-                LIMIT %s
+                WHERE "{foreign_column}" IS NOT NULL
             )
             SELECT
                 COUNT(*) FILTER (WHERE f.v IS NOT NULL)::float
@@ -810,7 +836,7 @@ class PostgresValueSampler:
         """  # noqa: S608 - identifiers are quoted with " and schema is from catalog
         try:
             with conn.cursor() as cur:
-                cur.execute(q, (self.limit, self.limit))
+                cur.execute(q, (self.limit,))
                 row = cur.fetchone()
                 if not row:
                     return None
@@ -981,6 +1007,9 @@ class MySQLValueSampler:
             return None
 
         db = self._qi(self.schema_name)
+        # Issue #10: the local side is bounded (an estimate is fair); the referenced
+        # side is not. Comparing against a sampled parent is a different question, and
+        # a valid FK into a table larger than the bound would score near zero.
         q = f"""
             SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
                        / GREATEST(COUNT(*), 1) AS overlap
@@ -993,12 +1022,12 @@ class MySQLValueSampler:
             LEFT JOIN (
                 SELECT DISTINCT {self._qi(foreign_column)} AS v
                 FROM {db}.{self._qi(foreign_table)}
-                LIMIT %s
+                WHERE {self._qi(foreign_column)} IS NOT NULL
             ) f ON l.v = f.v
         """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
         try:
             with conn.cursor() as cur:
-                cur.execute(q, (self.limit, self.limit))
+                cur.execute(q, (self.limit,))
                 row = cur.fetchone()
                 if not row or row[0] is None:
                     return None
@@ -1149,6 +1178,9 @@ class SQLServerValueSampler:
             return None
 
         s = self._qi(self.schema_name)
+        # Issue #10: the local side is bounded (an estimate is fair); the referenced
+        # side is not. Comparing against a sampled parent is a different question, and
+        # a valid FK into a table larger than the bound would score near zero.
         q = f"""
             SELECT CAST(SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END) AS FLOAT)
                        / NULLIF(COUNT(*), 0) AS overlap
@@ -1158,14 +1190,15 @@ class SQLServerValueSampler:
                 WHERE {self._qi(local_column)} IS NOT NULL
             ) l
             LEFT JOIN (
-                SELECT DISTINCT TOP (%s) {self._qi(foreign_column)} AS v
+                SELECT DISTINCT {self._qi(foreign_column)} AS v
                 FROM {s}.{self._qi(foreign_table)}
+                WHERE {self._qi(foreign_column)} IS NOT NULL
             ) f ON l.v = f.v
         """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
         try:
             cur = conn.cursor()
             try:
-                cur.execute(q, (self.limit, self.limit))
+                cur.execute(q, (self.limit,))
                 row = cur.fetchone()
             finally:
                 cur.close()
@@ -1336,6 +1369,9 @@ class DatabricksValueSampler:
     ) -> SamplerResult:
         """Return the fraction of distinct local values present in the
         foreign column, or ``None`` if the query failed."""
+        # Issue #10: the local side is bounded (an estimate is fair); the referenced
+        # side is not. Comparing against a sampled parent is a different question, and
+        # a valid FK into a table larger than the bound would score near zero.
         q = f"""
             SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
                        / GREATEST(COUNT(*), 1) AS overlap
@@ -1348,7 +1384,7 @@ class DatabricksValueSampler:
             LEFT JOIN (
                 SELECT DISTINCT {self._qi(foreign_column)} AS v
                 FROM {self._qt(foreign_table)}
-                LIMIT {self.limit}
+                WHERE {self._qi(foreign_column)} IS NOT NULL
             ) f ON l.v = f.v
         """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
         result = self._scalar(q, ())
@@ -1518,6 +1554,9 @@ class DuckDbValueSampler:
         foreign_column: str,
     ) -> SamplerResult:
         """Fraction of distinct local values present in the foreign column."""
+        # Issue #10: the local side is bounded (an estimate is fair); the referenced
+        # side is not. Comparing against a sampled parent is a different question, and
+        # a valid FK into a table larger than the bound would score near zero.
         q = f"""
             WITH l AS (
                 SELECT DISTINCT {self._qi(local_column)} AS v
@@ -1528,13 +1567,13 @@ class DuckDbValueSampler:
             f AS (
                 SELECT DISTINCT {self._qi(foreign_column)} AS v
                 FROM {self._qt(foreign_table)}
-                LIMIT ?
+                WHERE {self._qi(foreign_column)} IS NOT NULL
             )
             SELECT COUNT(*) FILTER (WHERE f.v IS NOT NULL)::DOUBLE
                        / GREATEST(COUNT(*), 1)::DOUBLE
             FROM l LEFT JOIN f ON l.v = f.v
         """  # noqa: S608 - identifiers are quoted; limits are bound ints we own
-        result = self._scalar(q, (self.limit, self.limit))
+        result = self._scalar(q, (self.limit,))
         if result is None:
             logger.warning(
                 "fk_sampler_query_failed",
@@ -1646,9 +1685,17 @@ class CsvValueSampler:
 
         return resolve_csv_table_path(self.directory, table)
 
-    def _distinct_text_values(self, table: str, column: str) -> Optional[set[str]]:
-        """Return the set of distinct, non-empty textual values for a column,
-        or ``None`` if the file/column could not be read."""
+    def _distinct_text_values(
+        self, table: str, column: str, *, bounded: bool = True
+    ) -> Optional[set[str]]:
+        """Distinct, non-empty textual values for a column, or ``None`` if unreadable.
+
+        ``bounded`` caps the read at ``limit`` rows. The *referenced* side of an overlap
+        comparison must pass ``bounded=False`` (issue #10): a sample of the parent answers
+        a different question, and a valid foreign key into a file longer than the bound
+        would otherwise score near zero. Reading one column of one CSV in full is the
+        price of a correct answer, and for a file-backed source it is a cheap one.
+        """
         import polars as pl
 
         path = self._resolve(table)
@@ -1660,7 +1707,7 @@ class CsvValueSampler:
                 separator=self.delimiter,
                 has_header=self.has_header,
                 columns=[column],
-                n_rows=self.limit,
+                n_rows=self.limit if bounded else None,
                 infer_schema_length=0,  # read everything as Utf8 (raw text)
             )
         except Exception as err:  # noqa: BLE001
@@ -1690,7 +1737,7 @@ class CsvValueSampler:
         local_vals = self._distinct_text_values(local_table, local_column)
         if not local_vals:
             return None
-        foreign_vals = self._distinct_text_values(foreign_table, foreign_column)
+        foreign_vals = self._distinct_text_values(foreign_table, foreign_column, bounded=False)
         if foreign_vals is None:
             return None
         overlap = len(local_vals & foreign_vals) / len(local_vals)
