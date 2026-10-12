@@ -58,6 +58,16 @@ def _duckdb_fixture(tmp_path) -> Callable[[], Any]:
         f"INSERT INTO orders SELECT i, {PARENT_ROWS} - (i % {CHILD_VALUES}) "
         f"FROM range(1, 201) t(i)"
     )
+    # Issue #12: text keys whose values agree only after case/whitespace normalization.
+    conn.execute("CREATE TABLE accounts (code VARCHAR PRIMARY KEY)")
+    conn.execute(
+        f"INSERT INTO accounts SELECT 'CUST' || i FROM range(1, {PARENT_ROWS + 1}) t(i)"
+    )
+    conn.execute("CREATE TABLE invoices (id INTEGER, code_lower VARCHAR, code_padded VARCHAR)")
+    conn.execute(
+        f"INSERT INTO invoices SELECT i, lower('CUST' || (i % {CHILD_VALUES} + 1)), "
+        f"rpad('CUST' || (i % {CHILD_VALUES} + 1), 14, ' ') FROM range(1, 201) t(i)"
+    )
     conn.close()
     return lambda: fk.DuckDbValueSampler(path, limit=BOUND)
 
@@ -72,6 +82,19 @@ def _csv_fixture(tmp_path) -> Callable[[], Any]:
     (d / "orders.csv").write_text(
         "id,customer_id\n"
         + "\n".join(f"{i},{PARENT_ROWS - (i % CHILD_VALUES)}" for i in range(1, 201)),
+        encoding="utf-8",
+    )
+    # Issue #12: text keys whose values agree only after case/whitespace normalization.
+    (d / "accounts.csv").write_text(
+        "code\n" + "\n".join(f"CUST{i}" for i in range(1, PARENT_ROWS + 1)),
+        encoding="utf-8",
+    )
+    (d / "invoices.csv").write_text(
+        "id,code_lower,code_padded\n"
+        + "\n".join(
+            f"{i},cust{i % CHILD_VALUES + 1},{('CUST' + str(i % CHILD_VALUES + 1)).ljust(14)}"
+            for i in range(1, 201)
+        ),
         encoding="utf-8",
     )
     return lambda: fk.CsvValueSampler(str(d), limit=BOUND)
@@ -115,6 +138,54 @@ class TestReferencedSideIsNotBounded:
             f"low; got {absent}"
         )
         assert score is not None
+
+
+class TestCaseAndWhitespaceDoNotVeto:
+    """A key that differs only in case or padding is still the same key (issue #12).
+
+    Strict comparison scores these zero, and zero is the hard veto in ``_apply_sampler``
+    — so before this the real foreign key was not left unproven, it was deleted. The
+    rescued result must also *say* it was rescued, which is what ``normalized`` carries.
+    """
+
+    @pytest.mark.parametrize("name", sorted(EMBEDDED))
+    @pytest.mark.parametrize("column", ["code_lower", "code_padded"])
+    def test_a_key_differing_only_in_case_or_padding_still_matches(
+        self, name, column, tmp_path
+    ):
+        sampler = EMBEDDED[name](tmp_path)()
+        try:
+            score = sampler("invoices", column, "accounts", "code")
+        finally:
+            close = getattr(sampler, "close", None)
+            if close:
+                close()
+        assert score is not None, f"{name} could not evaluate the pair"
+        assert score == pytest.approx(1.0), (
+            f"{name} scored {score} on '{column}', where every child value names a real "
+            "parent and differs only in case or trailing spaces. Zero here is the hard "
+            "veto, which deletes a valid foreign key (issue #12)."
+        )
+        assert fk._normalized(score), (
+            f"{name} matched '{column}' but did not mark the result normalized, so the "
+            "evidence cannot tell a reviewer the raw values disagree."
+        )
+
+    @pytest.mark.parametrize("name", sorted(EMBEDDED))
+    def test_an_exact_match_is_not_labelled_normalized(self, name, tmp_path):
+        """The label must mean something: an exact match must not claim to be rescued."""
+        sampler = EMBEDDED[name](tmp_path)()
+        try:
+            score = sampler("orders", "customer_id", "customers", "id")
+        finally:
+            close = getattr(sampler, "close", None)
+            if close:
+                close()
+        assert score == pytest.approx(1.0)
+        assert not fk._normalized(score), (
+            f"{name} marked an exactly-matching foreign key as normalized; the label "
+            "would then appear on candidates whose raw values agree perfectly."
+        )
 
 
 class TestRegistryIsComplete:

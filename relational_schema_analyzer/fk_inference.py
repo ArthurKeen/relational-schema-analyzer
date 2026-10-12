@@ -157,10 +157,101 @@ class InferenceOptions:
 # ── Sampler protocol ────────────────────────────────────────────────
 
 
+class Overlap(float):
+    """An overlap ratio that remembers whether it needed normalized comparison.
+
+    A plain ``float`` subclass on purpose: every existing consumer — comparisons,
+    arithmetic, ``float()``, r2g's re-export of :data:`SamplerResult` — keeps working
+    unchanged, while :func:`_apply_sampler` can read ``normalized`` to label the
+    evidence. Samplers may still return a bare ``float``; it reads as not normalized.
+    """
+
+    normalized: bool
+
+    def __new__(cls, value: float, *, normalized: bool = False) -> "Overlap":
+        self = super().__new__(cls, value)
+        self.normalized = normalized
+        return self
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"Overlap({float(self)!r}, normalized={self.normalized!r})"
+
+
+def _normalized(score: Optional[float]) -> bool:
+    """Did this result come from a normalized comparison? False for bare floats."""
+    return bool(getattr(score, "normalized", False))
+
+
+#: Strict overlap at or above this is already conclusive, so the normalized comparison
+#: is not run. 0.9 is where ``_apply_sampler``'s confidence bump saturates: a higher
+#: number could not change the candidate's fate, and normalizing is not free.
+#:
+#: Measured on live Postgres 16, 1M-row parent, default bound, median of five runs:
+#: the strict query alone is 121 ms, strict-plus-normalized is 794 ms. Normalizing
+#: means a second full pass over the referenced column — which since issue #10 is read
+#: whole — so it roughly doubles the expensive half. Rewriting it as a single join on
+#: the normalized key only recovers ~14% (632 ms), because the cost is the
+#: normalization itself, not the query shape.
+#:
+#: So: healthy foreign keys, the overwhelming majority, cost what they did in 0.9.1,
+#: and the second pass runs only on the weak and vetoed pairs that issue #12 is about
+#: — the ones where it can actually change the answer.
+_STRICT_IS_CONCLUSIVE = 0.9
+
+
+def _conclusive(exact: Optional[float]) -> bool:
+    """Is the strict overlap good enough that normalizing cannot change the outcome?"""
+    return exact is not None and exact >= _STRICT_IS_CONCLUSIVE
+
+
+def _pair(row: Any) -> tuple[Optional[float], Optional[float]]:
+    """Read ``(exact, normalized)`` from a result row that may carry only one column.
+
+    Every engine's overlap query selects both, but a cursor is not obliged to hand
+    back two values — a stub, an older driver, or a dialect that folded the second
+    expression away would give one. Treating the missing column as "not measured"
+    degrades to the strict comparison instead of raising.
+    """
+    if not row:
+        return None, None
+    exact = row[0]
+    norm = row[1] if len(row) > 1 else None
+    return (
+        None if exact is None else float(exact),
+        None if norm is None else float(norm),
+    )
+
+
+def _better(exact: Optional[float], norm: Optional[float]) -> Optional[Overlap]:
+    """Pick the stronger of the exact and normalized overlaps, recording which won.
+
+    Normalization can only ever merge values, so ``norm`` is almost always ``>= exact``
+    — but it also merges the *denominator*, so it is not guaranteed, and the engine
+    should never be handed a worse number than the strict comparison produced.
+    """
+    if exact is None and norm is None:
+        return None
+    if exact is None:
+        # Nothing to compare against, so the result cannot claim it "needed
+        # normalizing" — that label exists to tell a reviewer the raw values
+        # disagreed, and here the raw values were never measured.
+        return Overlap(float(norm), normalized=False)  # type: ignore[arg-type]
+    if norm is None:
+        return Overlap(float(exact), normalized=False)
+    if float(norm) > float(exact):
+        return Overlap(float(norm), normalized=True)
+    return Overlap(float(exact), normalized=False)
+
+
 SamplerResult = Optional[float]
 """Sampler callables return an overlap ratio in [0, 1], or ``None`` to
 indicate "no data / couldn't evaluate" (the engine then skips the
-overlap signal rather than treating it as a veto)."""
+overlap signal rather than treating it as a veto).
+
+Concretely this is an :class:`Overlap` — a ``float`` carrying one extra flag — but
+the declared type stays ``Optional[float]`` because ``Overlap`` *is* a float and
+downstream code (including r2g, which re-exports this name) must not have to change.
+"""
 
 
 Sampler = Callable[[str, str, str, str], SamplerResult]
@@ -184,6 +275,21 @@ it is not.
 
 A sampler that cannot evaluate a pair returns ``None`` ("not evaluated"), never ``0.0``
 — the engine reads zero as positive evidence of *absence*, which is a different claim.
+
+**Compare twice: strictly, and normalized.** Values that mean the same key routinely
+differ in case or padding — ``CUST1`` against ``cust1``, or ``CUST1`` against the
+space-padded ``CUST1   `` a ``CHAR(n)`` column becomes when landed in a warehouse.
+Strict comparison scores those **zero**, which is the hard veto, so a real foreign key
+is not merely unconfirmed but deleted (issue #12). Every sampler therefore measures
+both the strict overlap and the overlap after ``lower(trim(...))``, returns whichever
+is stronger via :func:`_better`, and the result carries ``normalized=True`` when the
+relaxed comparison is what rescued it, so the evidence can say so. Labelled, not
+laundered — the same rule the declared-key overlay follows.
+
+This also makes the answer **independent of the server's collation**. MySQL and SQL
+Server are commonly deployed case-insensitive, Postgres, DuckDB, Databricks and
+Snowflake are not, so before this an identical schema scored differently depending on
+where it lived. Normalizing explicitly means the engine decides, not the deployment.
 
 New samplers must be registered in ``tests/test_sampler_contract.py``, which asserts
 this behaviour against every sampler the module defines.
@@ -686,6 +792,7 @@ def _apply_sampler(
     """
     scores: list[float] = []
     any_zero = False
+    any_normalized = False
     for lcol, fcol in zip(c.columns, c.foreign_columns):
         try:
             score = sampler(c.table, lcol, c.foreign_table, fcol)
@@ -702,13 +809,21 @@ def _apply_sampler(
             continue
         if score <= 0.0:
             any_zero = True
+        if _normalized(score):
+            any_normalized = True
         scores.append(score)
 
     if not scores:
         return c
 
     avg = sum(scores) / len(scores)
-    evidence = list(c.evidence) + [f"value overlap avg={avg:.2f} ({len(scores)} cols sampled)"]
+    # Issue #12: say so when the match needed case/whitespace normalization. The
+    # candidate is still proposed — it is almost always right — but a reviewer
+    # deciding whether to trust it should see that the raw values do not match.
+    note = " (matched after normalizing case/whitespace)" if any_normalized else ""
+    evidence = list(c.evidence) + [
+        f"value overlap avg={avg:.2f} ({len(scores)} cols sampled){note}"
+    ]
 
     if any_zero and opts.overlap_veto_on_zero:
         return None
@@ -742,17 +857,16 @@ def _dedupe(candidates: list[InferredForeignKey]) -> list[InferredForeignKey]:
 class PostgresValueSampler:
     """Sampler that computes FK value-overlap ratios via PostgreSQL.
 
-    We use one bounded query per (local column, foreign column) pair::
+    One query per (local column, foreign column) pair, and a second one only when
+    the first is inconclusive.
 
-        SELECT COUNT(DISTINCT l.col)::float
-             / GREATEST(COUNT(DISTINCT l.col), 1)
-        FROM <local_sample> l
-        LEFT JOIN <foreign_sample> f ON l.col = f.pkcol;
-
-    To keep runtime bounded on large tables we materialize small
-    ``LIMIT`` CTEs for both sides (default 10k rows). This is a
-    *statistical* signal, not a proof — the engine treats it as one
-    input alongside the name-based score.
+    The **local** side is bounded by a ``LIMIT`` CTE (default 10k distinct values);
+    the **referenced** side is read whole, because comparing against a sample of the
+    parent answers a different question (issue #10). If that strict comparison scores
+    below :data:`_STRICT_IS_CONCLUSIVE`, a second query repeats it over
+    ``lower(btrim(...))`` on both sides, so a key differing only in case or padding is
+    not read as absent (issue #12). This is a *statistical* signal, not a proof — the
+    engine treats it as one input alongside the name-based score.
 
     Usage::
 
@@ -816,34 +930,46 @@ class PostgresValueSampler:
         # Issue #10: the local side is bounded (an estimate is fair); the referenced
         # side is not. Comparing against a sampled parent is a different question, and
         # a valid FK into a table larger than the bound would score near zero.
-        q = f"""
-            WITH l AS (
-                SELECT DISTINCT "{local_column}" AS v
-                FROM "{self.schema_name}"."{local_table}"
-                WHERE "{local_column}" IS NOT NULL
-                LIMIT %s
-            ),
-            f AS (
-                SELECT DISTINCT "{foreign_column}" AS v
-                FROM "{self.schema_name}"."{foreign_table}"
-                WHERE "{foreign_column}" IS NOT NULL
-            )
-            SELECT
-                COUNT(*) FILTER (WHERE f.v IS NOT NULL)::float
-                    / GREATEST(COUNT(*), 1)::float AS overlap
-            FROM l
-            LEFT JOIN f ON l.v = f.v
-        """  # noqa: S608 - identifiers are quoted with " and schema is from catalog
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        # Normalizing means a second full scan of the referenced column, so it runs
+        # only when the strict score leaves the outcome open (_STRICT_IS_CONCLUSIVE).
+        def q(norm: bool) -> str:
+            # The strict pass is byte-for-byte the query 0.9.1 ran, so a healthy
+            # foreign key costs exactly what it used to.
+            lk = f'lower(btrim("{local_column}"::text))' if norm else f'"{local_column}"'
+            fk_ = f'lower(btrim("{foreign_column}"::text))' if norm else f'"{foreign_column}"'
+            return f"""
+                WITH l AS (
+                    SELECT DISTINCT {lk} AS v
+                    FROM "{self.schema_name}"."{local_table}"
+                    WHERE "{local_column}" IS NOT NULL
+                    LIMIT %s
+                ),
+                f AS (
+                    SELECT DISTINCT {fk_} AS v
+                    FROM "{self.schema_name}"."{foreign_table}"
+                    WHERE "{foreign_column}" IS NOT NULL
+                )
+                SELECT
+                    COUNT(*) FILTER (WHERE f.v IS NOT NULL)::float
+                        / GREATEST(COUNT(*), 1)::float AS overlap
+                FROM l
+                LEFT JOIN f ON l.v = f.v
+            """  # noqa: S608 - identifiers are quoted with " and schema is from catalog
+
         try:
             with conn.cursor() as cur:
-                cur.execute(q, (self.limit,))
+                cur.execute(q(False), (self.limit,))
                 row = cur.fetchone()
                 if not row:
                     return None
-                value = row[0]
-                if value is None:
-                    return None
-                return float(value)
+                exact = None if row[0] is None else float(row[0])
+                if _conclusive(exact):
+                    return Overlap(exact, normalized=False)  # type: ignore[arg-type]
+                cur.execute(q(True), (self.limit,))
+                row = cur.fetchone()
+                norm = None if not row or row[0] is None else float(row[0])
+                return _better(exact, norm)
         except Exception as err:  # noqa: BLE001
             logger.warning(
                 "fk_sampler_query_failed",
@@ -1010,28 +1136,47 @@ class MySQLValueSampler:
         # Issue #10: the local side is bounded (an estimate is fair); the referenced
         # side is not. Comparing against a sampled parent is a different question, and
         # a valid FK into a table larger than the bound would score near zero.
-        q = f"""
-            SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
-                       / GREATEST(COUNT(*), 1) AS overlap
-            FROM (
-                SELECT DISTINCT {self._qi(local_column)} AS v
-                FROM {db}.{self._qi(local_table)}
-                WHERE {self._qi(local_column)} IS NOT NULL
-                LIMIT %s
-            ) l
-            LEFT JOIN (
-                SELECT DISTINCT {self._qi(foreign_column)} AS v
-                FROM {db}.{self._qi(foreign_table)}
-                WHERE {self._qi(foreign_column)} IS NOT NULL
-            ) f ON l.v = f.v
-        """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        # The strict pass is forced binary because MySQL's default collation is often
+        # case-insensitive — the answer must not depend on how this server was
+        # configured. The normalized pass is a second scan of the referenced column,
+        # so it runs only when the strict score leaves the outcome open.
+        def q(norm: bool) -> str:
+            lc, fc = self._qi(local_column), self._qi(foreign_column)
+            lk = f"LOWER(TRIM(CAST({lc} AS CHAR)))" if norm else lc
+            fk_ = f"LOWER(TRIM(CAST({fc} AS CHAR)))" if norm else fc
+            # BINARY on the strict join so the measurement does not depend on the
+            # server's collation; the normalized pass has already folded case away.
+            on = "l.v = f.v" if norm else "BINARY l.v = BINARY f.v"
+            return f"""
+                SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
+                           / GREATEST(COUNT(*), 1) AS overlap
+                FROM (
+                    SELECT DISTINCT {lk} AS v
+                    FROM {db}.{self._qi(local_table)}
+                    WHERE {lc} IS NOT NULL
+                    LIMIT %s
+                ) l
+                LEFT JOIN (
+                    SELECT DISTINCT {fk_} AS v
+                    FROM {db}.{self._qi(foreign_table)}
+                    WHERE {fc} IS NOT NULL
+                ) f ON {on}
+            """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+
         try:
             with conn.cursor() as cur:
-                cur.execute(q, (self.limit,))
+                cur.execute(q(False), (self.limit,))
                 row = cur.fetchone()
-                if not row or row[0] is None:
+                if not row:
                     return None
-                return float(row[0])
+                exact = None if row[0] is None else float(row[0])
+                if _conclusive(exact):
+                    return Overlap(exact, normalized=False)  # type: ignore[arg-type]
+                cur.execute(q(True), (self.limit,))
+                row = cur.fetchone()
+                norm = None if not row or row[0] is None else float(row[0])
+                return _better(exact, norm)
         except Exception as err:  # noqa: BLE001
             logger.warning(
                 "fk_sampler_query_failed",
@@ -1181,30 +1326,58 @@ class SQLServerValueSampler:
         # Issue #10: the local side is bounded (an estimate is fair); the referenced
         # side is not. Comparing against a sampled parent is a different question, and
         # a valid FK into a table larger than the bound would score near zero.
-        q = f"""
-            SELECT CAST(SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END) AS FLOAT)
-                       / NULLIF(COUNT(*), 0) AS overlap
-            FROM (
-                SELECT DISTINCT TOP (%s) {self._qi(local_column)} AS v
-                FROM {s}.{self._qi(local_table)}
-                WHERE {self._qi(local_column)} IS NOT NULL
-            ) l
-            LEFT JOIN (
-                SELECT DISTINCT {self._qi(foreign_column)} AS v
-                FROM {s}.{self._qi(foreign_table)}
-                WHERE {self._qi(foreign_column)} IS NOT NULL
-            ) f ON l.v = f.v
-        """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        # The strict pass forces a binary collation because SQL Server databases are
+        # frequently created case-insensitive, and the answer must not depend on that.
+        # Note this controls *case* only: SQL Server blank-pads when comparing strings
+        # regardless of collation, so a trailing-space difference matches on the strict
+        # pass here while it does not on Postgres. The normalized pass is what makes
+        # the two engines agree; it runs only when the strict score leaves the outcome
+        # open, because it is a second scan of the referenced column.
+        def q(norm: bool) -> str:
+            lc, fc = self._qi(local_column), self._qi(foreign_column)
+            cast = "CAST({} AS NVARCHAR(MAX))"
+            lk = f"LOWER(LTRIM(RTRIM({cast.format(lc)})))" if norm else lc
+            fk_ = f"LOWER(LTRIM(RTRIM({cast.format(fc)})))" if norm else fc
+            # A binary collation on the strict join so the measurement does not depend
+            # on the database's collation; the normalized pass has folded case away.
+            bin2 = "COLLATE Latin1_General_BIN2"
+            on = (
+                "l.v = f.v"
+                if norm
+                else f"{cast.format('l.v')} {bin2} = {cast.format('f.v')} {bin2}"
+            )
+            return f"""
+                SELECT CAST(SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END) AS FLOAT)
+                           / NULLIF(COUNT(*), 0) AS overlap
+                FROM (
+                    SELECT DISTINCT TOP (%s) {lk} AS v
+                    FROM {s}.{self._qi(local_table)}
+                    WHERE {lc} IS NOT NULL
+                ) l
+                LEFT JOIN (
+                    SELECT DISTINCT {fk_} AS v
+                    FROM {s}.{self._qi(foreign_table)}
+                    WHERE {fc} IS NOT NULL
+                ) f ON {on}
+            """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+
         try:
             cur = conn.cursor()
             try:
-                cur.execute(q, (self.limit,))
+                cur.execute(q(False), (self.limit,))
                 row = cur.fetchone()
+                if not row:
+                    return None
+                exact = None if row[0] is None else float(row[0])
+                if _conclusive(exact):
+                    return Overlap(exact, normalized=False)  # type: ignore[arg-type]
+                cur.execute(q(True), (self.limit,))
+                row = cur.fetchone()
+                norm = None if not row or row[0] is None else float(row[0])
             finally:
                 cur.close()
-            if not row or row[0] is None:
-                return None
-            return float(row[0])
+            return _better(exact, norm)
         except Exception as err:  # noqa: BLE001
             logger.warning(
                 "fk_sampler_query_failed",
@@ -1372,33 +1545,48 @@ class DatabricksValueSampler:
         # Issue #10: the local side is bounded (an estimate is fair); the referenced
         # side is not. Comparing against a sampled parent is a different question, and
         # a valid FK into a table larger than the bound would score near zero.
-        q = f"""
-            SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
-                       / GREATEST(COUNT(*), 1) AS overlap
-            FROM (
-                SELECT DISTINCT {self._qi(local_column)} AS v
-                FROM {self._qt(local_table)}
-                WHERE {self._qi(local_column)} IS NOT NULL
-                LIMIT {self.limit}
-            ) l
-            LEFT JOIN (
-                SELECT DISTINCT {self._qi(foreign_column)} AS v
-                FROM {self._qt(foreign_table)}
-                WHERE {self._qi(foreign_column)} IS NOT NULL
-            ) f ON l.v = f.v
-        """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
-        result = self._scalar(q, ())
-        if result is None:
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        # The normalized pass rescans the referenced column, so it runs only when the
+        # strict score leaves the outcome open (_STRICT_IS_CONCLUSIVE).
+        lc, fc = self._qi(local_column), self._qi(foreign_column)
+
+        def run(norm: bool) -> Optional[float]:
+            lk = f"LOWER(TRIM(CAST({lc} AS STRING)))" if norm else lc
+            fk_ = f"LOWER(TRIM(CAST({fc} AS STRING)))" if norm else fc
+            q = f"""
+                SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
+                           / GREATEST(COUNT(*), 1) AS overlap
+                FROM (
+                    SELECT DISTINCT {lk} AS v
+                    FROM {self._qt(local_table)}
+                    WHERE {lc} IS NOT NULL
+                    LIMIT {self.limit}
+                ) l
+                LEFT JOIN (
+                    SELECT DISTINCT {fk_} AS v
+                    FROM {self._qt(foreign_table)}
+                    WHERE {fc} IS NOT NULL
+                ) f ON l.v = f.v
+            """  # noqa: S608 - identifiers are backtick-quoted; limit is an int we own
+            row = self._row(q, ())
+            return None if not row or row[0] is None else float(row[0])
+
+        exact = run(False)
+        if exact is None:
             logger.warning(
                 "fk_sampler_query_failed",
                 local=f"{local_table}.{local_column}",
                 foreign=f"{foreign_table}.{foreign_column}",
             )
-        return result
+            return None
+        if _conclusive(exact):
+            return Overlap(exact, normalized=False)
+        return _better(exact, run(True))
 
     # ── Denormalization probes (PRD Phase 11) ──────────────────────
 
-    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+    def _row(self, query: str, params: tuple) -> Optional[tuple]:
+        """Run ``query`` and return its first row, or ``None`` if it could not run."""
         try:
             conn = self._conn_lazy()
         except Exception as err:  # noqa: BLE001
@@ -1414,12 +1602,16 @@ class DatabricksValueSampler:
                 row = cur.fetchone()
             finally:
                 cur.close()
-            if not row or row[0] is None:
-                return None
-            return float(row[0])
+            return tuple(row) if row else None
         except Exception as err:  # noqa: BLE001
             logger.warning("databricks_sampler_query_failed", error=str(err))
             return None
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        row = self._row(query, params)
+        if not row or row[0] is None:
+            return None
+        return float(row[0])
 
     def distinct_ratio(self, table: str, column: str) -> SamplerResult:
         q = f"""
@@ -1531,7 +1723,8 @@ class DuckDbValueSampler:
     def _qt(self, table: str) -> str:
         return f"{self._qi(self.schema_name)}.{self._qi(table)}"
 
-    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+    def _row(self, query: str, params: tuple) -> Optional[tuple]:
+        """Run ``query`` and return its first row, or ``None`` if it could not run."""
         try:
             conn = self._conn_lazy()
         except Exception as err:  # noqa: BLE001
@@ -1539,12 +1732,16 @@ class DuckDbValueSampler:
             return None
         try:
             row = conn.execute(query, params).fetchone() if params else conn.execute(query).fetchone()
-            if not row or row[0] is None:
-                return None
-            return float(row[0])
+            return tuple(row) if row else None
         except Exception as err:  # noqa: BLE001
             logger.warning("duckdb_sampler_query_failed", error=str(err))
             return None
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        row = self._row(query, params)
+        if not row or row[0] is None:
+            return None
+        return float(row[0])
 
     def __call__(
         self,
@@ -1557,30 +1754,44 @@ class DuckDbValueSampler:
         # Issue #10: the local side is bounded (an estimate is fair); the referenced
         # side is not. Comparing against a sampled parent is a different question, and
         # a valid FK into a table larger than the bound would score near zero.
-        q = f"""
-            WITH l AS (
-                SELECT DISTINCT {self._qi(local_column)} AS v
-                FROM {self._qt(local_table)}
-                WHERE {self._qi(local_column)} IS NOT NULL
-                LIMIT ?
-            ),
-            f AS (
-                SELECT DISTINCT {self._qi(foreign_column)} AS v
-                FROM {self._qt(foreign_table)}
-                WHERE {self._qi(foreign_column)} IS NOT NULL
-            )
-            SELECT COUNT(*) FILTER (WHERE f.v IS NOT NULL)::DOUBLE
-                       / GREATEST(COUNT(*), 1)::DOUBLE
-            FROM l LEFT JOIN f ON l.v = f.v
-        """  # noqa: S608 - identifiers are quoted; limits are bound ints we own
-        result = self._scalar(q, (self.limit,))
-        if result is None:
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        # The normalized pass rescans the referenced column, so it runs only when the
+        # strict score leaves the outcome open (_STRICT_IS_CONCLUSIVE).
+        lc, fc = self._qi(local_column), self._qi(foreign_column)
+
+        def run(norm: bool) -> Optional[float]:
+            lk = f"lower(trim(CAST({lc} AS VARCHAR)))" if norm else lc
+            fk_ = f"lower(trim(CAST({fc} AS VARCHAR)))" if norm else fc
+            q = f"""
+                WITH l AS (
+                    SELECT DISTINCT {lk} AS v
+                    FROM {self._qt(local_table)}
+                    WHERE {lc} IS NOT NULL
+                    LIMIT ?
+                ),
+                f AS (
+                    SELECT DISTINCT {fk_} AS v
+                    FROM {self._qt(foreign_table)}
+                    WHERE {fc} IS NOT NULL
+                )
+                SELECT COUNT(*) FILTER (WHERE f.v IS NOT NULL)::DOUBLE
+                           / GREATEST(COUNT(*), 1)::DOUBLE
+                FROM l LEFT JOIN f ON l.v = f.v
+            """  # noqa: S608 - identifiers are quoted; limits are bound ints we own
+            row = self._row(q, (self.limit,))
+            return None if not row or row[0] is None else float(row[0])
+
+        exact = run(False)
+        if exact is None:
             logger.warning(
                 "fk_sampler_query_failed",
                 local=f"{local_table}.{local_column}",
                 foreign=f"{foreign_table}.{foreign_column}",
             )
-        return result
+            return None
+        if _conclusive(exact):
+            return Overlap(exact, normalized=False)
+        return _better(exact, run(True))
 
     # ── Denormalization probes ─────────────────────────────────────
 
@@ -1740,8 +1951,17 @@ class CsvValueSampler:
         foreign_vals = self._distinct_text_values(foreign_table, foreign_column, bounded=False)
         if foreign_vals is None:
             return None
-        overlap = len(local_vals & foreign_vals) / len(local_vals)
-        return float(overlap)
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        # Normalizing means another pass over the whole referenced column, which for a
+        # file-backed source is already the expensive half, so it runs only when the
+        # strict score leaves the outcome open (_STRICT_IS_CONCLUSIVE).
+        exact = len(local_vals & foreign_vals) / len(local_vals)
+        if _conclusive(exact):
+            return Overlap(exact, normalized=False)
+        local_norm = {v.strip().lower() for v in local_vals}
+        foreign_norm = {v.strip().lower() for v in foreign_vals}
+        norm = len(local_norm & foreign_norm) / len(local_norm) if local_norm else None
+        return _better(exact, norm)
 
     # ── Denormalization probes (PRD Phase 11) ──────────────────────
 
@@ -2060,22 +2280,50 @@ class SnowflakeValueSampler:
         if foreign is None:
             return None
         foreign_values, complete = foreign
+        # Issue #12: a key differing only in case or padding must not read as absent.
+        local_norm = {v.strip().lower() for v in local_values}
         if complete:
-            return len(local_values & foreign_values) / len(local_values)
+            exact = len(local_values & foreign_values) / len(local_values)
+            if _conclusive(exact):
+                return Overlap(exact, normalized=False)
+            foreign_norm = {v.strip().lower() for v in foreign_values}
+            return _better(
+                exact,
+                len(local_norm & foreign_norm) / len(local_norm) if local_norm else None,
+            )
         # The foreign column has more distinct values than the bound: test the
         # sampled local values against the whole column, server-side.
+        #
+        # Unlike the other samplers this keeps *both* comparisons in one statement
+        # rather than running the normalized one conditionally. Here the scarce
+        # resource is the query budget, not wall-clock: splitting it would cost a
+        # second query on exactly the weak pairs issue #12 is about, and the budget is
+        # a hard cap that decides how many pairs get evaluated at all. One scan
+        # computing two conditional counts is the cheaper trade on this path.
         import json
 
         fcol = self._ident(foreign_column)
+        flatten = "(SELECT VALUE::STRING FROM TABLE(FLATTEN(INPUT => PARSE_JSON(%s))))"
         rows = self._run(
-            f"SELECT COUNT(DISTINCT TO_VARCHAR({fcol})) FROM {self._table(foreign_table)} "  # noqa: S608
-            f"WHERE TO_VARCHAR({fcol}) IN "
-            "(SELECT VALUE::STRING FROM TABLE(FLATTEN(INPUT => PARSE_JSON(%s))))",
-            (json.dumps(sorted(local_values)),),
+            "SELECT "
+            f"COUNT(DISTINCT CASE WHEN TO_VARCHAR({fcol}) IN {flatten} "
+            f"THEN TO_VARCHAR({fcol}) END), "
+            f"COUNT(DISTINCT CASE WHEN LOWER(TRIM(TO_VARCHAR({fcol}))) IN {flatten} "
+            f"THEN LOWER(TRIM(TO_VARCHAR({fcol}))) END) "
+            f"FROM {self._table(foreign_table)}",  # noqa: S608
+            (json.dumps(sorted(local_values)), json.dumps(sorted(local_norm))),
         )
-        if not rows or rows[0][0] is None:
+        if not rows:
             return None
-        return min(1.0, float(rows[0][0]) / len(local_values))
+        remote_exact = (
+            None if rows[0][0] is None else min(1.0, float(rows[0][0]) / len(local_values))
+        )
+        remote_norm = (
+            None
+            if rows[0][1] is None or not local_norm
+            else min(1.0, float(rows[0][1]) / len(local_norm))
+        )
+        return _better(remote_exact, remote_norm)
 
     # ── Denormalization probes (PRD Phase 11) ──
 
