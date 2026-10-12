@@ -137,3 +137,19 @@ def test_sampling_screens_and_the_full_count_confirms(parts):
     assert sampled["contract_id"][0] <= 2000
     combo = probe.combo_stats("contracts", ["contract_id"], sample=False)
     assert combo == (2000, 2000, 2000)
+
+
+def test_identifiers_that_need_escaping_are_handled(parts):
+    """A column named ``a"b`` is legal; before the quoting fix it produced a syntax
+    error, the probe returned ``None``, and that table's key could never be found —
+    silently, since "could not evaluate" looks the same as a dead connection."""
+    _, probe = parts
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(_DSN, autocommit=True) as c:
+        c.execute(f'CREATE TABLE {SCHEMA}.odd ("Weird Col" text, "a""b" text, "order" text)')
+        c.execute(f"INSERT INTO {SCHEMA}.odd VALUES ('x1','y1','z1'), ('x2','y2','z2')")
+    for col in ("Weird Col", 'a"b', "order"):
+        assert probe.column_stats("odd", [col], sample=False) == {col: (2, 2, 2)}, (
+            f"column {col!r} could not be profiled"
+        )
+    assert probe.combo_stats("odd", ['a"b', "order"], sample=False) == (2, 2, 2)
