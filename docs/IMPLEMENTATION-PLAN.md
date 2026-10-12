@@ -374,6 +374,42 @@ projection — the whole core (Phases 0–5) landed together in the first releas
   caught by the test on its first run. `SnowflakeValueSampler` needed no change: it was already
   correct (v0.9.0), which is why `r2g`'s Snowflake-only `suggest-keys` was never misled.
 
+- **v0.9.2** — **value samplers no longer delete a foreign key whose values differ only in
+  case or padding.** Comparison was strict, so `CUST1` against `cust1`, or against the
+  space-padded `CUST1   ` a `CHAR(n)` column becomes when landed in a warehouse, scored
+  **zero** — and zero is the hard veto in `_apply_sampler`, so the real key was not left
+  unconfirmed, it was removed. Same failure class as the v0.9.1 fix, reported by neither:
+  found by reading [HelixDB/helix-foundry](https://github.com/HelixDB/helix-foundry), which
+  measures strict and relaxed overlap separately. Measured live on Postgres 16, MySQL 8.4
+  and SQL Server 2022, each against a foreign key the database itself enforces, with a
+  500-code parent whose every child value names a real parent: 0.9.1 scores **0.000** on
+  lower-cased keys on all three; 0.9.2 scores **1.000**.
+  - *The answer no longer depends on the deployment.* With 0.9.1 a trailing-space
+    difference passed on MySQL and SQL Server, which blank-pad when comparing, and failed
+    on Postgres, which does not — the same schema scoring differently depending on which
+    engine held it, with nothing in the output saying so. The strict pass is now forced
+    binary (MySQL `BINARY`, SQL Server `Latin1_General_BIN2`) and the relaxed pass is
+    explicit, so the engine decides rather than the server's collation.
+  - *Labelled, not laundered.* The result is an `Overlap` — a `float` **subclass** carrying
+    one flag, so comparisons, arithmetic and `r2g`'s re-export of `SamplerResult` are
+    untouched and no consumer changes — and `_apply_sampler` appends
+    `(matched after normalizing case/whitespace)` to the evidence when the relaxed
+    comparison is what rescued the candidate. The same rule the declared-key overlay follows.
+  - *The relaxed pass is not free, so it is conditional.* Normalizing means a second full
+    scan of the referenced column, which since v0.9.1 is read whole; doing it
+    unconditionally took a 1M-row parent from 121 ms to 794 ms. The strict pass now runs
+    alone and returns immediately at ≥ 0.9, where the confidence bump saturates and a
+    better number cannot change the candidate's fate. A healthy foreign key costs what it
+    did in 0.9.1 (87 ms against 88 ms, same machine and data); only the weak and vetoed
+    pairs pay the second pass. Snowflake's server-side branch deliberately keeps both
+    counts in one statement, because there the scarce resource is the query budget rather
+    than wall-clock, and it still costs three queries per pair.
+  - *Scope:* the change can only raise a score, never lower it, so it can newly accept a
+    candidate but never newly veto one. Output changes only where a sampler is supplied;
+    the baseline path passes none, so default bundles and their fingerprints are unaffected.
+  `r2g` is reached by this one, unlike v0.9.1: `suggest-keys` is Snowflake-only, and
+  Snowflake is case-sensitive, so `0.000` was reachable there.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
