@@ -392,9 +392,10 @@ Planned next:
     (bug, target 0.9.2) — samplers delete valid FKs when text differs only by case or trailing
     spaces. Same failure class and severity as #10: zero is the hard veto, so the key is removed
     rather than left unconfirmed. Measured at 0.000 against a parent every child row matches.
-  - [#13](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/13) — the
-    sampler contract test proves only the positive half; a sampler returning `1.0`
-    unconditionally would pass it. Small, independent of the other two.
+  - ~~#13~~ — **closed as invalid.** The claim that the contract test had no negative
+    half was wrong: `test_a_genuine_non_match_still_scores_zero` has been in the file
+    since it was created, so a sampler returning `1.0` unconditionally would already
+    have failed. The real gap was case/whitespace coverage, which #12 closes.
   - [#14](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/14) —
     detect shortcut FKs that duplicate a longer path, verified on the data and *reported*
     rather than deleted. Belongs with the denormalization work, not before it.
