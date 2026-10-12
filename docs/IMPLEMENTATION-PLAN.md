@@ -410,6 +410,44 @@ projection — the whole core (Phases 0–5) landed together in the first releas
   `r2g` is reached by this one, unlike v0.9.1: `suggest-keys` is Snowflake-only, and
   Snowflake is case-sensitive, so `0.000` was reachable there.
 
+- **v0.9.3** — **the source interface stops promising what four of nine connectors cannot
+  do.** `create_source_connector` is public and declared to return a `SourceConnector`,
+  which promised both *describe a schema* and *open a session to read rows*. DuckDB,
+  Databricks, dbt and OSI have no `open_session`: a caller would read the declaration,
+  call it, and get `AttributeError` — with their own type checker having approved the
+  call, because RSA said it was safe.
+  - *The four are not four of a kind, and that decided the shape.* DuckDB and Databricks
+    are real databases that could stream and do not yet — a gap. A dbt `manifest.json`
+    and an OSI `*.osi.yaml` are **data catalogs** (DESIGN §9.3.1: "read-only", "no live
+    system") that say which tables exist and hold none of their rows, so there is nothing
+    to stream and never will be. Making all four implement it would mean methods whose
+    only honest behaviour is to raise.
+  - *So the promise splits.* `SourceConnector` is what every source does; the new
+    `BulkReadableSource` adds `open_session` for the five that hold rows; and
+    `supports_bulk_read` is a `TypeGuard`, so inside its branch a checker knows
+    `open_session` exists rather than the caller hoping. It asks about `open_session`
+    directly rather than via `isinstance`, because a `runtime_checkable` protocol carrying
+    data members also demands `connection_string` and `schema_name` *on the instance* — a
+    half-constructed connector would answer "cannot stream" when it plainly can.
+    `tests/test_source_connector_protocol.py` pins every connector's answer, so closing the
+    DuckDB/Databricks gap is a deliberate edit and a catalog source cannot quietly start
+    claiming to hold rows.
+  - *mypy now passes clean across the package and runs in CI.* That interface defect was
+    the only real finding among its 18 standing errors. Ten were optional extras mypy could
+    not see — configured per module in `pyproject.toml`, derived from
+    `[project.optional-dependencies]` rather than from what happens to be installed, so a
+    *new* unresolved import is still a finding. Six were genuine but small and are fixed,
+    not suppressed: `object` where an SDK module or response meant `Any`; a loop variable
+    reused for a `dict` and then a `ForeignKey`; three `x if isinstance(x, dict) else {}`
+    ternaries that do not narrow; one variable holding either the `str` from the Turtle
+    exporter or the `dict` from the JSON-LD one. No baseline and no suppressions.
+    `RELEASING.md` had asked for mypy as a release gate while it carried those 18 errors,
+    so the step was always skipped and the document read as though three checks had run.
+  - *Runtime behaviour is unchanged*: no connector gained or lost a method, and no output
+    or fingerprint changes. The narrowed type is a compile-time promise only, and no
+    consumer type-checks against it today — `r2g` keeps its own mirrored copy, which this
+    release makes stale.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
