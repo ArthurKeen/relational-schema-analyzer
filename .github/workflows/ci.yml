@@ -35,5 +35,15 @@ jobs:
       - name: Ruff
         run: ruff check .
 
+      # Added once the package type-checked clean (0 errors, no baseline). Before
+      # that, docs/RELEASING.md told you to run mypy as a release gate while it had
+      # 18 standing errors, so it was always skipped — a checklist step that cannot
+      # pass is worse than no step, because the document reads as if it ran. The one
+      # time it was run properly it was reporting a real defect: SourceConnector
+      # promised open_session, which four of nine connectors did not implement, so
+      # the public factory's declared return type was false.
+      - name: Mypy
+        run: mypy
+
       - name: Pytest
         run: pytest -q

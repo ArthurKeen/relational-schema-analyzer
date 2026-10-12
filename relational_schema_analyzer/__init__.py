@@ -32,7 +32,9 @@ from .samplers import (
 from .conceptual import ConceptualSchema
 from .connectors import (
     SUPPORTED_SOURCE_TYPES,
+    BulkReadableSource,
     SourceConnector,
+    supports_bulk_read,
     create_connector,
     create_source_connector,
 )
@@ -79,7 +81,9 @@ __all__ = [
     # Phase 1 — physical core
     "create_connector",
     "create_source_connector",
+    "BulkReadableSource",
     "SourceConnector",
+    "supports_bulk_read",
     "SUPPORTED_SOURCE_TYPES",
     "PhysicalSchema",
     "Schema",

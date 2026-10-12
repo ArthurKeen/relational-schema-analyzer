@@ -104,7 +104,13 @@ attempt failed:
    | `README.md` | the status line near the top |
    | `tests/fixtures/csv_demo_bundle.golden.json` | the embedded `"version"` — **the golden test fails without it** |
 
-2. **Verify green.** `pytest -q`, `ruff check .`, `mypy relational_schema_analyzer`.
+2. **Verify green.** `pytest -q`, `ruff check .`, `mypy`.
+
+   All three run in CI as of 0.9.3, so a push tells you the same thing. They were
+   not always enforceable: mypy carried 18 standing errors until 0.9.3, which made
+   this step unpassable and therefore skipped. Settings now live in `pyproject.toml`
+   under `[tool.mypy]`, including the per-module `ignore_missing_imports` list for
+   optional extras — a *new* unresolved import is still a finding.
 
 3. **Update the release history** in `docs/IMPLEMENTATION-PLAN.md`.
 

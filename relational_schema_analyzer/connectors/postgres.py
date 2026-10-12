@@ -416,8 +416,8 @@ class PostgresConnector:
         unique_col_sets = [set(u) for u in unique_sets]
         if pks:
             unique_col_sets.append(set(pks))
-        for fk in fks:
-            fk.is_unique = set(fk.columns) in unique_col_sets
+        for fk_obj in fks:
+            fk_obj.is_unique = set(fk_obj.columns) in unique_col_sets
 
         checks = self._fetch_check_constraints(cur, table_name)
 

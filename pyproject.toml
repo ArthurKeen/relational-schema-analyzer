@@ -90,6 +90,53 @@ line-length = 100
 # resolving a day later.
 select = ["E4", "E7", "E9", "F"]
 
+[tool.mypy]
+python_version = "3.10"
+files = ["relational_schema_analyzer"]
+# Deliberately not strict. The point of running mypy here is to catch the class of
+# bug it already found once — a declared interface that four of nine implementations
+# did not satisfy, so the public factory's return type lied — not to chase
+# annotations through a codebase that was not written against it.
+warn_unused_ignores = true
+
+# Optional extras and untyped third-party packages. mypy reporting "I cannot see
+# this library" is not a defect in this code: the dependency is optional and simply
+# absent, or it ships no type information. Listed one by one rather than globally,
+# so a *new* unresolved import is still a finding.
+[[tool.mypy.overrides]]
+module = [
+    "structlog",
+    "yaml",
+    "pymysql",
+    "pymysql.*",
+    "pymssql",
+    "databricks",
+    "databricks.*",
+    "openai",
+    "anthropic",
+    "duckdb",
+    "polars",
+    "snowflake",
+    "snowflake.*",
+    "psycopg",
+    "psycopg.*",
+    "rdflib",
+    "rdflib.*",
+    "conceptual_taxonomy",
+    "conceptual_taxonomy.*",
+    "httpx",
+    "mcp",
+    "mcp.*",
+]
+ignore_missing_imports = true
+
+# Derived from `[project.optional-dependencies]`, not from whatever happens to be
+# installed. CI installs only `[dev,postgres,csv,owl,duckdb,mcp]`, so a developer
+# with the `taxonomy` extra present sees mypy resolve `conceptual_taxonomy` while
+# CI cannot — which is exactly how this list first went out incomplete, and the
+# same local-versus-CI drift that made ruff and fakesnow turn CI red before.
+# When a new optional extra is added, add its import name here too.
+
 [tool.pytest.ini_options]
 markers = [
     "integration: live-database tests; require RUN_INTEGRATION=1 and a per-dialect DSN (opt-in, not run by default)",

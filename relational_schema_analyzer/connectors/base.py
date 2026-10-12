@@ -33,7 +33,7 @@ inside ``PostgresSession`` and the Snowflake equivalents inside
 from __future__ import annotations
 
 import os
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 from .session import SourceSession
 from ..types import Schema
@@ -58,7 +58,21 @@ def expand_env_vars(connection_string: str) -> str:
 
 @runtime_checkable
 class SourceConnector(Protocol):
-    """Structural interface every R2G source connector must satisfy."""
+    """What *every* source can do: describe itself.
+
+    Deliberately narrow. Four of the nine connectors cannot read rows at all, and
+    two of those four never will: a dbt ``manifest.json`` and an OSI ``*.osi.yaml``
+    are **data catalogs** (DESIGN §9.3.1 — "read-only", "no live system"). They say
+    a table called ``customers`` exists with these columns and this primary key;
+    they contain no customer rows. There is nothing for them to stream.
+
+    Promising bulk reads here made :func:`create_source_connector` return a type
+    that lies about four of its nine results: a caller would read the declaration,
+    call ``open_session``, and get :class:`AttributeError` — with their own type
+    checker having approved the call, because this said it was safe.
+
+    A source that *does* hold rows satisfies :class:`BulkReadableSource` as well.
+    """
 
     connection_string: str
     schema_name: str
@@ -66,6 +80,19 @@ class SourceConnector(Protocol):
     def get_schema(self) -> Schema:
         """Introspect the upstream source and return a populated :class:`Schema`."""
         ...
+
+
+@runtime_checkable
+class BulkReadableSource(SourceConnector, Protocol):
+    """A source that holds rows and can stream them, not merely describe them.
+
+    Satisfied today by Postgres, MySQL, SQL Server, Snowflake and CSV. DuckDB and
+    Databricks are real databases that *could* satisfy it and do not yet — a gap,
+    unlike the catalog sources, for which the question does not arise.
+
+    Ask with :func:`supports_bulk_read` rather than ``hasattr``: it narrows the type
+    for the checker, so the branch that streams is verified rather than hoped for.
+    """
 
     def open_session(self) -> SourceSession:
         """Open a bulk-read session with consistent-snapshot semantics.
@@ -76,6 +103,23 @@ class SourceConnector(Protocol):
         cursor.
         """
         ...
+
+
+def supports_bulk_read(connector: SourceConnector) -> TypeGuard[BulkReadableSource]:
+    """Can this source's rows be read, or does it only describe a schema?
+
+    ``TypeGuard`` so that inside a ``if supports_bulk_read(c):`` branch the checker
+    knows ``c.open_session()`` exists — the guarantee the old single protocol
+    claimed for every source and could not keep for four of them.
+
+    Asks about ``open_session`` directly rather than ``isinstance(c,
+    BulkReadableSource)``. A ``runtime_checkable`` protocol carrying data members
+    also requires ``connection_string`` and ``schema_name`` to be *present on the
+    instance*, so a half-constructed connector, or one exposing those some other
+    way, would answer "cannot stream" when it can. The only thing this function is
+    asked is whether the rows can be read.
+    """
+    return callable(getattr(connector, "open_session", None))
 
 
 SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (

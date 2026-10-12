@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass
 
 from ..defaults import LLM_TEMPERATURE
 from .base import LLMResponse, import_optional_sdk, wrap_provider_call
 
 
-def _import_openai() -> object:
+def _import_openai() -> Any:
     return import_optional_sdk("openai", "openai")
 
 

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass
 
 from ..defaults import ANTHROPIC_MAX_TOKENS, LLM_TEMPERATURE
 from .base import LLMResponse, import_optional_sdk, wrap_provider_call
 
 
-def _import_anthropic() -> object:
+def _import_anthropic() -> Any:
     return import_optional_sdk("anthropic", "anthropic")
 
 
-def _extract_text(resp: object) -> str:
+def _extract_text(resp: Any) -> str:
     text = ""
     try:
         for block in resp.content:
