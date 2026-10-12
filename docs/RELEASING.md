@@ -82,11 +82,11 @@ publisher on PyPI, in that order.
 Reversing these breaks the next release with `invalid-publisher`, exactly as 0.7.0's first
 attempt failed:
 
-1. Register the trusted publisher on PyPI for owner `arango-solutions`, same repository name,
+1. Register the trusted publisher on PyPI for owner `arango-solutions-org`, same repository name,
    workflow and environment. (Browser; only a project owner can.)
-2. Confirm the `pypi` environment exists in the `arango-solutions` repository.
+2. Confirm the `pypi` environment exists in the `arango-solutions-org` repository.
 3. Only then change `release.yml`'s guard to
-   `github.repository == 'arango-solutions/relational-schema-analyzer'`, and remove the
+   `github.repository == 'arango-solutions-org/relational-schema-analyzer'`, and remove the
    `ArthurKeen` registration from PyPI so the two cannot both fire.
 
 </details>
