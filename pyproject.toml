@@ -122,8 +122,20 @@ module = [
     "psycopg.*",
     "rdflib",
     "rdflib.*",
+    "conceptual_taxonomy",
+    "conceptual_taxonomy.*",
+    "httpx",
+    "mcp",
+    "mcp.*",
 ]
 ignore_missing_imports = true
+
+# Derived from `[project.optional-dependencies]`, not from whatever happens to be
+# installed. CI installs only `[dev,postgres,csv,owl,duckdb,mcp]`, so a developer
+# with the `taxonomy` extra present sees mypy resolve `conceptual_taxonomy` while
+# CI cannot — which is exactly how this list first went out incomplete, and the
+# same local-versus-CI drift that made ruff and fakesnow turn CI red before.
+# When a new optional extra is added, add its import name here too.
 
 [tool.pytest.ini_options]
 markers = [
