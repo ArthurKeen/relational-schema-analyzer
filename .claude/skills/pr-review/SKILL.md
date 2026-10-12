@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review one pull request on arango-solutions/relational-schema-analyzer the way this repository needs — verify every claim with a command (live Postgres/MySQL/SQL Server, fakesnow for Snowflake, reverting the fix to prove each test), apply the repo's own rules (output changes are fingerprint changes, converge with the arango-schema-analyzer port and r2g's re-export, stacked-PR merges, release numbering), and produce a draft review for the user to approve before anything is posted. Use when asked to review an RSA PR, check whether one can merge, or re-check after the author pushed fixes. NOT a whole-repo audit, and NOT for r2g, arango-schema-analyzer or contextual-data-fabric PRs (they have their own).
+description: Review one pull request on arango-solutions-org/relational-schema-analyzer the way this repository needs — verify every claim with a command (live Postgres/MySQL/SQL Server, fakesnow for Snowflake, reverting the fix to prove each test), apply the repo's own rules (output changes are fingerprint changes, converge with the arango-schema-analyzer port and r2g's re-export, stacked-PR merges, release numbering), and produce a draft review for the user to approve before anything is posted. Use when asked to review an RSA PR, check whether one can merge, or re-check after the author pushed fixes. NOT a whole-repo audit, and NOT for r2g, arango-schema-analyzer or contextual-data-fabric PRs (they have their own).
 ---
 
 # PR Review
@@ -45,7 +45,7 @@ Re-run before you post.
 ## This repo's shape — read before anything
 
 - **Two GitHub repos.** PRs live on
-  **`arango-solutions/relational-schema-analyzer`**. `origin` fetches from it
+  **`arango-solutions-org/relational-schema-analyzer`**. `origin` fetches from it
   and pushes to it *and* to `ArthurKeen/relational-schema-analyzer`. Pass
   `--repo` to every `gh` call.
 - **Merges are merge commits, `delete_branch_on_merge` is off.** A **stacked
@@ -68,7 +68,7 @@ Re-run before you post.
 ### 0. Load the context before reading the diff
 
 ```sh
-R=arango-solutions/relational-schema-analyzer
+R=arango-solutions-org/relational-schema-analyzer
 gh pr view N --repo $R \
   --json title,author,headRefName,baseRefName,headRefOid,isDraft,mergeStateStatus,files,body,reviews,comments
 gh pr checks N --repo $R
