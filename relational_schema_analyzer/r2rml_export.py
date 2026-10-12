@@ -218,7 +218,8 @@ def export_r2rml_turtle(
     pm = data.get("physicalMapping") or {}
     entities = cs.get("entities") or []
     rels = cs.get("relationships") or []
-    pm_entities = pm.get("entities") if isinstance(pm.get("entities"), dict) else {}
+    raw_entities = pm.get("entities")
+    pm_entities: dict[str, Any] = raw_entities if isinstance(raw_entities, dict) else {}
     pm_rels = pm.get("relationships") if isinstance(pm.get("relationships"), dict) else {}
 
     lines: list[str] = [
@@ -251,13 +252,16 @@ def export_r2rml_turtle(
         if not isinstance(name, str) or name not in emitted:
             continue
         mapping = pm_entities[name]
+        if not isinstance(mapping, dict):
+            continue
         pk = emitted[name]
         columns = [
             p["name"]
             for p in (e.get("properties") or [])
             if isinstance(p, dict) and isinstance(p.get("name"), str)
         ]
-        pm_props = mapping.get("properties") if isinstance(mapping.get("properties"), dict) else {}
+        raw_props = mapping.get("properties")
+        pm_props: dict[str, Any] = raw_props if isinstance(raw_props, dict) else {}
 
         block = [f"{_triples_map_iri(name)} a rr:TriplesMap ;"]
         table = _qualified_table(str(mapping["tableName"]), mapping.get("schema"))

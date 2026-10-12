@@ -172,6 +172,7 @@ def run_tool(request: dict[str, Any]) -> dict[str, Any]:
             kwargs["base_iri"] = owl_opts["iriBase"]
         if owl_opts.get("physIriBase"):
             kwargs["phys_iri"] = owl_opts["physIriBase"]
+        content: Any
         if fmt == "jsonld":
             content = export_owl_jsonld(analysis, **kwargs)
         elif fmt == "turtle":

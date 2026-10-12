@@ -114,7 +114,7 @@ def load_key_overlay(path: str | Path) -> dict[str, Any]:
     text = p.read_text(encoding="utf-8")
     if p.suffix.lower() in (".yaml", ".yml"):
         try:
-            import yaml  # type: ignore[import-untyped]  # optional dep, no stubs shipped
+            import yaml  # optional dep, no stubs shipped
         except ImportError as err:  # pragma: no cover - exercised via monkeypatch
             raise OverlayError(
                 f"Reading a YAML overlay ({p.name}) requires PyYAML. Install it with: "

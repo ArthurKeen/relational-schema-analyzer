@@ -205,7 +205,8 @@ class OsiConnector:
             return None
         name = str(name)
         # OSI has no SQL type; the only type signal is dimension.is_time.
-        dimension = field.get("dimension") if isinstance(field.get("dimension"), dict) else {}
+        raw_dim = field.get("dimension")
+        dimension: dict = raw_dim if isinstance(raw_dim, dict) else {}
         data_type = "timestamp" if dimension.get("is_time") else ""
         return Column(
             name=name,

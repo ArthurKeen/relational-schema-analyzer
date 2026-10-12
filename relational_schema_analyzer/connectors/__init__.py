@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from .base import (
     SUPPORTED_SOURCE_TYPES,
+    BulkReadableSource,
     SourceConnector,
+    supports_bulk_read,
     create_connector,
     create_source_connector,
     expand_env_vars,
@@ -23,7 +25,9 @@ from .session import SourceSession
 
 __all__ = [
     "SUPPORTED_SOURCE_TYPES",
+    "BulkReadableSource",
     "SourceConnector",
+    "supports_bulk_read",
     "SourceSession",
     "create_connector",
     "create_source_connector",

@@ -33,7 +33,7 @@ def _scrub_secrets(text: str) -> str:
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Block redirects so a typo'd base_url can't shuttle credentials elsewhere."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]  # pragma: no cover
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # pragma: no cover
         raise urllib.error.HTTPError(
             req.full_url, code, f"redirect blocked ({code} -> {newurl})", headers, fp
         )
