@@ -422,19 +422,25 @@ Planned next:
   [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
   Northwind); the downstream `r2g` and `arango-ontoextract` integration PRs; shared contract
   package.
-- **Open issues carrying deferred decisions** — recorded so they survive the session that
-  found them, in the order they should be taken:
-  - [#12](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/12)
-    (bug, target 0.9.2) — samplers delete valid FKs when text differs only by case or trailing
-    spaces. Same failure class and severity as #10: zero is the hard veto, so the key is removed
-    rather than left unconfirmed. Measured at 0.000 against a parent every child row matches.
-  - ~~#13~~ — **closed as invalid.** The claim that the contract test had no negative
-    half was wrong: `test_a_genuine_non_match_still_scores_zero` has been in the file
-    since it was created, so a sampler returning `1.0` unconditionally would already
-    have failed. The real gap was case/whitespace coverage, which #12 closes.
+- **Deferred findings, recorded so they survive the session that found them.** All came
+  from reading [HelixDB/helix-foundry](https://github.com/HelixDB/helix-foundry) (October
+  2026), which solves the same inference problem with the data already copied onto the
+  local machine, so a full scan costs it nothing. That architecture does not port to RSA,
+  which samples a customer's warehouse under a budget; these are the ideas that survive
+  the difference.
+  - [#12](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/12) —
+    **shipped in v0.9.2.** Samplers deleted valid foreign keys whose values differed only
+    in case or trailing spaces.
+  - ~~#13~~ — **closed as invalid.** The claim that the contract test had no negative half
+    was wrong: `test_a_genuine_non_match_still_scores_zero` has been in the file since it
+    was created, so a sampler returning `1.0` unconditionally would already have failed.
+    The real gap was case/whitespace coverage, which #12 closed.
   - [#14](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/14) —
-    detect shortcut FKs that duplicate a longer path, verified on the data and *reported*
-    rather than deleted. Belongs with the denormalization work, not before it.
-
-  All three came from reading [HelixDB/helix-foundry](https://github.com/HelixDB/helix-foundry)
-  (October 2026), which solves the same inference problem with the data already copied locally.
+    **open.** Detect shortcut foreign keys that duplicate a longer path: an invoice
+    pointing straight at an account *and* at a subscription that points at the same
+    account. Decided on the data — helix-foundry requires 95% row agreement before
+    treating the direct link as redundant — rather than by graph transitive reduction,
+    which would wrongly collapse `shipping_address_id` and `billing_address_id` into one.
+    In RSA it should be **reported with its agreement ratio, not deleted**: describing the
+    schema is the job, and dropping an edge is a consumer's decision. Belongs with the
+    denormalization work, not before it.
