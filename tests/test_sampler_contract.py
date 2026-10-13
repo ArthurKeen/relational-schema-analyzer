@@ -188,6 +188,39 @@ class TestCaseAndWhitespaceDoNotVeto:
         )
 
 
+class TestKeyProbeCoverage:
+    """Which samplers can discover keys from data — and which cannot, on purpose.
+
+    ``profile_primary_keys`` / ``draft_key_overlay`` exist for sources whose catalog
+    declares no keys. They reach an engine through ``KeyProbe``: ``column_stats`` and
+    ``combo_stats``. For a long time only Snowflake implemented them, so the feature
+    could not run on the other six — issue #18, found when a Postgres source declaring
+    no keys had no path at all.
+
+    This is a visibility test, not a requirement: it records the current answer so
+    adding or omitting a probe is a decision someone makes, not something that drifts.
+    """
+
+    #: Samplers that implement KeyProbe today.
+    KEY_PROBE_CAPABLE = {"SnowflakeValueSampler", "PostgresValueSampler"}
+
+    @pytest.mark.parametrize("name", sorted(SAMPLER_REGISTRY))
+    def test_key_probe_support_matches_the_record(self, name):
+        cls = getattr(fk, name)
+        has = all(callable(getattr(cls, m, None)) for m in ("column_stats", "combo_stats"))
+        expected = name in self.KEY_PROBE_CAPABLE
+        assert has is expected, (
+            f"{name} key-probe support is now {has}, recorded as {expected}. Adding "
+            "column_stats/combo_stats closes part of issue #18 for that engine — update "
+            "KEY_PROBE_CAPABLE deliberately, and say so in the release history."
+        )
+
+    def test_the_gap_is_still_real(self):
+        """Fails once every sampler can profile keys — then this class can go."""
+        missing = set(SAMPLER_REGISTRY) - self.KEY_PROBE_CAPABLE
+        assert missing, "all samplers now implement KeyProbe; issue #18 is closed"
+
+
 class TestRegistryIsComplete:
     """A new sampler cannot be added without appearing in the contract above."""
 

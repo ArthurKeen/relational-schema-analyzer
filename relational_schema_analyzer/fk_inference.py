@@ -898,6 +898,21 @@ class PostgresValueSampler:
             self._conn = psycopg.connect(self.connection_string)
         return self._conn
 
+    @staticmethod
+    def _qi(name: str) -> str:
+        """Quote an identifier, doubling any embedded quote.
+
+        Names come from the catalog, so this is about correctness rather than
+        injection: a column legitimately named ``a"b`` produced a syntax error, the
+        query was caught, and the probe reported "could not evaluate" — so that
+        table's key could never be found and nothing said why. The DuckDB and
+        Snowflake samplers already quote this way.
+        """
+        return '"' + name.replace('"', '""') + '"'
+
+    def _qt(self, table: str) -> str:
+        return f"{self._qi(self.schema_name)}.{self._qi(table)}"
+
     def close(self) -> None:
         if self._conn is not None:
             try:
@@ -936,19 +951,19 @@ class PostgresValueSampler:
         def q(norm: bool) -> str:
             # The strict pass is byte-for-byte the query 0.9.1 ran, so a healthy
             # foreign key costs exactly what it used to.
-            lk = f'lower(btrim("{local_column}"::text))' if norm else f'"{local_column}"'
-            fk_ = f'lower(btrim("{foreign_column}"::text))' if norm else f'"{foreign_column}"'
+            lk = f"lower(btrim({self._qi(local_column)}::text))" if norm else self._qi(local_column)
+            fk_ = f"lower(btrim({self._qi(foreign_column)}::text))" if norm else self._qi(foreign_column)
             return f"""
                 WITH l AS (
                     SELECT DISTINCT {lk} AS v
-                    FROM "{self.schema_name}"."{local_table}"
-                    WHERE "{local_column}" IS NOT NULL
+                    FROM {self._qt(local_table)}
+                    WHERE {self._qi(local_column)} IS NOT NULL
                     LIMIT %s
                 ),
                 f AS (
                     SELECT DISTINCT {fk_} AS v
-                    FROM "{self.schema_name}"."{foreign_table}"
-                    WHERE "{foreign_column}" IS NOT NULL
+                    FROM {self._qt(foreign_table)}
+                    WHERE {self._qi(foreign_column)} IS NOT NULL
                 )
                 SELECT
                     COUNT(*) FILTER (WHERE f.v IS NOT NULL)::float
@@ -986,6 +1001,86 @@ class PostgresValueSampler:
 
     # ── Denormalization probes (PRD Phase 11) ──────────────────────
 
+    # ── Key discovery (KeyProbe) ───────────────────────────────────
+    #
+    # What lets `profile_primary_keys` / `draft_key_overlay` propose keys for a
+    # source whose catalog declares none. Until this, `SnowflakeValueSampler` was
+    # the only sampler implementing them, so the feature built for keyless schemas
+    # could not run on Postgres — see issue #18.
+    #
+    # The shape is deliberately the same as Snowflake's: screen on a sample (any
+    # duplicate or NULL rejects a column conclusively, so a bounded read is enough
+    # to say *no*), then confirm the survivors over the whole table (only a full
+    # count can say *yes*). Both return ``None`` for "could not evaluate" rather
+    # than a guess, which is what keeps a table in `not_evaluated` instead of being
+    # reported keyless.
+
+    def _row(self, query: str, params: tuple) -> Optional[tuple]:
+        """Run a query and return its first row, or ``None`` if it could not run."""
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("key_probe_connect_failed", error=str(err))
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+            return tuple(row) if row else None
+        except Exception as err:  # noqa: BLE001
+            logger.warning("key_probe_query_failed", error=str(err))
+            try:
+                conn.rollback()  # a failed statement poisons the transaction otherwise
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
+    def column_stats(
+        self, table: str, columns: Sequence[str], *, sample: bool
+    ) -> Optional[dict[str, tuple[int, int, int]]]:
+        """``{column: (rows, non_null, distinct)}`` for every column, in one query."""
+        if not columns:
+            return {}
+        cols = [self._qi(c) for c in columns]
+        src = f'{self._qt(table)}'
+        params: tuple = ()
+        if sample:
+            src = f"(SELECT {', '.join(cols)} FROM {src} LIMIT %s) AS s"
+            params = (self.limit,)
+        parts = ["COUNT(*)"] + [f"COUNT({c}), COUNT(DISTINCT {c})" for c in cols]
+        row = self._row(f"SELECT {', '.join(parts)} FROM {src}", params)  # noqa: S608
+        if row is None:
+            return None
+        total = int(row[0])
+        return {
+            name: (total, int(row[1 + 2 * i]), int(row[2 + 2 * i]))
+            for i, name in enumerate(columns)
+        }
+
+    def combo_stats(
+        self, table: str, columns: Sequence[str], *, sample: bool
+    ) -> Optional[tuple[int, int, int]]:
+        """``(rows, rows with every column non-null, distinct non-null tuples)``."""
+        if not columns:
+            return None
+        cols = [self._qi(c) for c in columns]
+        joined = ", ".join(cols)
+        not_null = " AND ".join(f"{c} IS NOT NULL" for c in cols)
+        limit = " LIMIT %s" if sample else ""
+        params: tuple = (self.limit,) if sample else ()
+        # Every derived table is aliased: Postgres rejects an unaliased subquery in
+        # FROM, where Snowflake accepts one.
+        row = self._row(
+            f'WITH s AS (SELECT {joined} FROM {self._qt(table)}{limit}) '  # noqa: S608
+            "SELECT (SELECT COUNT(*) FROM s), "
+            f"(SELECT COUNT(*) FROM s WHERE {not_null}), "
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {joined} FROM s WHERE {not_null}) AS d)",
+            params,
+        )
+        if row is None:
+            return None
+        return int(row[0]), int(row[1]), int(row[2])
+
     def _scalar(self, query: str, params: tuple) -> SamplerResult:
         """Run a bounded scalar query, returning its float value or ``None``."""
         try:
@@ -1011,9 +1106,9 @@ class PostgresValueSampler:
     def distinct_ratio(self, table: str, column: str) -> SamplerResult:
         q = f"""
             WITH s AS (
-                SELECT "{column}" AS v
-                FROM "{self.schema_name}"."{table}"
-                WHERE "{column}" IS NOT NULL
+                SELECT {self._qi(column)} AS v
+                FROM {self._qt(table)}
+                WHERE {self._qi(column)} IS NOT NULL
                 LIMIT %s
             )
             SELECT COUNT(DISTINCT v)::float / GREATEST(COUNT(*), 1)::float FROM s
@@ -1023,12 +1118,12 @@ class PostgresValueSampler:
     def group_single_valued(
         self, table: str, determinant_columns: list[str], dependent_column: str
     ) -> SamplerResult:
-        det = ", ".join(f'"{c}"' for c in determinant_columns)
-        not_null = " AND ".join(f'"{c}" IS NOT NULL' for c in determinant_columns)
+        det = ", ".join(self._qi(c) for c in determinant_columns)
+        not_null = " AND ".join(f"{self._qi(c)} IS NOT NULL" for c in determinant_columns)
         q = f"""
             WITH s AS (
-                SELECT {det}, "{dependent_column}" AS dep
-                FROM "{self.schema_name}"."{table}"
+                SELECT {det}, {self._qi(dependent_column)} AS dep
+                FROM {self._qt(table)}
                 LIMIT %s
             ),
             g AS (
@@ -1045,9 +1140,9 @@ class PostgresValueSampler:
     def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
         q = f"""
             WITH s AS (
-                SELECT "{column}" AS v
-                FROM "{self.schema_name}"."{table}"
-                WHERE "{column}" IS NOT NULL
+                SELECT {self._qi(column)} AS v
+                FROM {self._qt(table)}
+                WHERE {self._qi(column)} IS NOT NULL
                 LIMIT %s
             )
             SELECT COALESCE(AVG(CASE WHEN strpos(v, %s) > 0 THEN 1.0 ELSE 0.0 END), 0)::float
