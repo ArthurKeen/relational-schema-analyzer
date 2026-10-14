@@ -511,6 +511,22 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     Server key probe cannot land ungoverned.
   - No output or fingerprint change.
 
+- **v0.9.6** — **an accepted inference is labelled, not laundered.**
+  `InferredForeignKey.to_foreign_key()` folded a candidate back "as if it had been
+  declared": `enforced` stayed `True`, which the serializer omits, and the name defaulted
+  to `None`. The key then read as a constraint the source guarantees, and since
+  `baseline` treats a table with an enforced FK as authoritative and skips fallback
+  inference on it, one folded-in guess also stopped inference on that table
+  ([#24](https://github.com/arango-solutions-org/relational-schema-analyzer/pull/24)).
+  - The key is always `enforced=False`; an explicit `constraint_name` is still honoured.
+  - The default name is `inferred:<table>_<cols>_fk`, matching the overlay's
+    `overlay:<table>_<cols>_fk`. `INFERRED_CONSTRAINT_PREFIX` is exported from
+    `overlay.py` beside `OVERLAY_CONSTRAINT_PREFIX`: the two provenances for keys that are
+    asserted rather than declared.
+  - r2g 0.6.1's `infer-fks --accept` already writes keys this way
+    (arango-solutions-org/r2g-arango#20); this brings the library method in line.
+  - Nothing in RSA calls `to_foreign_key`, so no output or fingerprint change.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
