@@ -877,6 +877,16 @@ class PostgresValueSampler:
     The sampler is resilient: any exception from psycopg gets caught
     and surfaced as ``None`` so the name-based score still wins. Call
     :meth:`close` to release the connection.
+
+    **Cost governance is opt-in**, so existing callers behave exactly as before.
+    ``max_queries`` caps the queries one sampler runs (later probes return ``None``
+    and ``stats["budget_exhausted"]`` says so); ``statement_timeout_s`` has the
+    server cancel any single query that runs longer; ``query_tag`` sets
+    ``application_name`` so the queries are findable in ``pg_stat_activity``.
+    These mirror :class:`SnowflakeValueSampler`, so a caller such as r2g's
+    ``suggest-keys`` can govern either source the same way. A failed connection
+    is attempted once per sampler, never once per probe; ``stats["connect_failed"]``
+    reports it, so "could not connect" is never mistaken for "no key".
     """
 
     def __init__(
@@ -885,18 +895,101 @@ class PostgresValueSampler:
         *,
         schema_name: str = "public",
         limit: int = 10_000,
+        max_queries: Optional[int] = None,
+        statement_timeout_s: Optional[int] = None,
+        query_tag: Optional[str] = None,
     ) -> None:
+        if max_queries is not None and int(max_queries) < 1:
+            raise ValueError("max_queries must be at least 1 (or None for no cap)")
+        if statement_timeout_s is not None and int(statement_timeout_s) < 1:
+            raise ValueError("statement_timeout_s must be at least 1 second (or None)")
         self.connection_string = connection_string
         self.schema_name = schema_name
         self.limit = max(100, int(limit))
+        self.max_queries = None if max_queries is None else int(max_queries)
+        self.statement_timeout_s = None if statement_timeout_s is None else int(statement_timeout_s)
+        self.query_tag = query_tag
         self._conn = None
+        self._session_ready = False
+        self._connect_error: Optional[str] = None
+        self.queries_run = 0
+        self.budget_exhausted = False
+
+    @property
+    def stats(self) -> dict[str, Any]:
+        """What the governor allowed -- the same keys :class:`SnowflakeValueSampler` reports."""
+        return {
+            "queries_run": self.queries_run,
+            "max_queries": self.max_queries,
+            "cache_hits": 0,
+            "budget_exhausted": self.budget_exhausted,
+            "connect_failed": self._connect_error is not None,
+        }
 
     def _conn_lazy(self):
         if self._conn is None:
             import psycopg
 
             self._conn = psycopg.connect(self.connection_string)
+        if not self._session_ready:
+            self._session_ready = True
+            settings = []
+            if self.statement_timeout_s is not None:
+                settings.append(("statement_timeout", f"{self.statement_timeout_s * 1000}"))
+            if self.query_tag:
+                settings.append(("application_name", self.query_tag[:63]))
+            if settings:
+                # set_config is parameterised, unlike SET. Committed, because Postgres
+                # undoes a session SET when its transaction rolls back -- and the first
+                # failed probe rolls back. Without the commit the timeout would vanish
+                # silently at exactly the moment it starts to matter.
+                with self._conn.cursor() as cur:
+                    for name, value in settings:
+                        cur.execute("SELECT set_config(%s, %s, false)", (name, value))
+                self._conn.commit()
         return self._conn
+
+    def _execute(self, query: str, params: tuple, *, what: str) -> Optional[tuple]:
+        """Run one governed query and return its first row, or ``None``.
+
+        ``None`` means "could not evaluate": budget spent, no connection, or the
+        query failed (including a statement timeout). Every probe goes through here,
+        so the budget counts all of them and a failed connection is tried once.
+        """
+        if self.max_queries is not None and self.queries_run >= self.max_queries:
+            if not self.budget_exhausted:
+                self.budget_exhausted = True
+                logger.warning(
+                    "postgres_sampler_budget_exhausted",
+                    max_queries=self.max_queries,
+                    hint="remaining probes return None",
+                )
+            return None
+        if self._connect_error is not None:
+            return None
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            self._connect_error = str(err)
+            logger.warning(
+                f"{what}_connect_failed",
+                error=self._connect_error,
+                hint="remaining probes return None without reconnecting",
+            )
+            return None
+        self.queries_run += 1
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+            return tuple(row) if row else None
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"{what}_query_failed", error=str(err))
+            try:
+                conn.rollback()  # a failed statement poisons the transaction otherwise
+            except Exception:  # noqa: BLE001
+                pass
+            return None
 
     @staticmethod
     def _qi(name: str) -> str:
@@ -920,6 +1013,8 @@ class PostgresValueSampler:
             except Exception:  # noqa: BLE001
                 pass
             self._conn = None
+        # A reconnect after close() must re-apply the timeout and tag.
+        self._session_ready = False
 
     def __enter__(self) -> "PostgresValueSampler":
         return self
@@ -936,11 +1031,6 @@ class PostgresValueSampler:
     ) -> SamplerResult:
         """Return the fraction of distinct local values present in the
         foreign column, or ``None`` if the query failed."""
-        try:
-            conn = self._conn_lazy()
-        except Exception as err:  # noqa: BLE001
-            logger.warning("fk_sampler_connect_failed", error=str(err))
-            return None
 
         # Issue #10: the local side is bounded (an estimate is fair); the referenced
         # side is not. Comparing against a sampled parent is a different question, and
@@ -972,32 +1062,15 @@ class PostgresValueSampler:
                 LEFT JOIN f ON l.v = f.v
             """  # noqa: S608 - identifiers are quoted with " and schema is from catalog
 
-        try:
-            with conn.cursor() as cur:
-                cur.execute(q(False), (self.limit,))
-                row = cur.fetchone()
-                if not row:
-                    return None
-                exact = None if row[0] is None else float(row[0])
-                if _conclusive(exact):
-                    return Overlap(exact, normalized=False)  # type: ignore[arg-type]
-                cur.execute(q(True), (self.limit,))
-                row = cur.fetchone()
-                norm = None if not row or row[0] is None else float(row[0])
-                return _better(exact, norm)
-        except Exception as err:  # noqa: BLE001
-            logger.warning(
-                "fk_sampler_query_failed",
-                local=f"{local_table}.{local_column}",
-                foreign=f"{foreign_table}.{foreign_column}",
-                error=str(err),
-            )
-            # Roll back the aborted transaction so future queries succeed.
-            try:
-                conn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
+        row = self._execute(q(False), (self.limit,), what="fk_sampler")
+        if not row:
             return None
+        exact = None if row[0] is None else float(row[0])
+        if _conclusive(exact):
+            return Overlap(exact, normalized=False)  # type: ignore[arg-type]
+        row = self._execute(q(True), (self.limit,), what="fk_sampler")
+        norm = None if not row or row[0] is None else float(row[0])
+        return _better(exact, norm)
 
     # ── Denormalization probes (PRD Phase 11) ──────────────────────
 
@@ -1017,23 +1090,7 @@ class PostgresValueSampler:
 
     def _row(self, query: str, params: tuple) -> Optional[tuple]:
         """Run a query and return its first row, or ``None`` if it could not run."""
-        try:
-            conn = self._conn_lazy()
-        except Exception as err:  # noqa: BLE001
-            logger.warning("key_probe_connect_failed", error=str(err))
-            return None
-        try:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                row = cur.fetchone()
-            return tuple(row) if row else None
-        except Exception as err:  # noqa: BLE001
-            logger.warning("key_probe_query_failed", error=str(err))
-            try:
-                conn.rollback()  # a failed statement poisons the transaction otherwise
-            except Exception:  # noqa: BLE001
-                pass
-            return None
+        return self._execute(query, params, what="key_probe")
 
     def column_stats(
         self, table: str, columns: Sequence[str], *, sample: bool
@@ -1083,25 +1140,10 @@ class PostgresValueSampler:
 
     def _scalar(self, query: str, params: tuple) -> SamplerResult:
         """Run a bounded scalar query, returning its float value or ``None``."""
-        try:
-            conn = self._conn_lazy()
-        except Exception as err:  # noqa: BLE001
-            logger.warning("denorm_sampler_connect_failed", error=str(err))
+        row = self._execute(query, params, what="denorm_sampler")
+        if not row or row[0] is None:
             return None
-        try:
-            with conn.cursor() as cur:
-                cur.execute(query, params)
-                row = cur.fetchone()
-            if not row or row[0] is None:
-                return None
-            return float(row[0])
-        except Exception as err:  # noqa: BLE001
-            logger.warning("denorm_sampler_query_failed", error=str(err))
-            try:
-                conn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-            return None
+        return float(row[0])
 
     def distinct_ratio(self, table: str, column: str) -> SamplerResult:
         q = f"""
@@ -2515,8 +2557,18 @@ def create_value_sampler(
     pg_schema: str = "public",
     source_params: dict | None = None,
     limit: int = 10_000,
+    max_queries: int | None = None,
+    statement_timeout_s: int | None = None,
+    query_tag: str | None = None,
 ):
     """Build a value-overlap sampler for a source, or ``None`` if unsupported.
+
+    ``max_queries`` / ``statement_timeout_s`` / ``query_tag`` govern the samplers
+    that support them -- Postgres and Snowflake, which are also the two that
+    implement key profiling (``column_stats`` / ``combo_stats``). Left as ``None``
+    they keep each sampler's own default: Postgres ungoverned, as it always was;
+    Snowflake governed by its built-in budget and timeout. Other samplers have no
+    governor; a caller that needs one should check ``hasattr(sampler, "stats")``.
 
     PostgreSQL (incl. ``postgres`` / ``pg`` aliases) → :class:`PostgresValueSampler`,
     MySQL / MariaDB → :class:`MySQLValueSampler`, SQL Server →
@@ -2537,8 +2589,19 @@ def create_value_sampler(
     params = source_params or {}
     # Resolve $VAR credential references the same way create_source_connector does.
     connection_string = expand_env_vars(connection_string)
+    governance: dict[str, Any] = {
+        k: v
+        for k, v in (
+            ("max_queries", max_queries),
+            ("statement_timeout_s", statement_timeout_s),
+            ("query_tag", query_tag),
+        )
+        if v is not None
+    }
     if is_postgresql(source_type):
-        return PostgresValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+        return PostgresValueSampler(
+            connection_string, schema_name=pg_schema, limit=limit, **governance
+        )
     if is_mysql(source_type):
         return MySQLValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if is_sqlserver(source_type):
@@ -2549,7 +2612,9 @@ def create_value_sampler(
         return DatabricksValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "snowflake":
         # Governed by default (query budget + statement timeout); see the class.
-        return SnowflakeValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+        return SnowflakeValueSampler(
+            connection_string, schema_name=pg_schema, limit=limit, **governance
+        )
     if normalize_source_type(source_type) == "csv":
         return CsvValueSampler(
             connection_string,

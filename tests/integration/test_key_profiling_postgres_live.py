@@ -257,3 +257,50 @@ def test_the_second_pass_can_be_turned_off(keyed_parts):
     profile = profile_primary_keys(schema, probe, find_additional_keys=False)
     assert profile.additional == {}
     assert "accounts" in profile.declared
+
+
+# ── Cost governance (opt-in) ─────────────────────────────────────────────────
+
+
+def test_the_server_cancels_a_query_past_the_timeout_and_the_limit_survives(keyless_schema):
+    """``statement_timeout_s`` is enforced by Postgres, and keeps being enforced.
+
+    The second half is the subtle one: a session ``SET`` is undone when its
+    transaction rolls back, and the first cancelled probe *does* roll back. Unless
+    the setting was committed, the timeout protects exactly one query.
+    """
+    probe = PostgresValueSampler(_DSN, schema_name=SCHEMA, statement_timeout_s=1, query_tag="rsa-it")
+    try:
+        assert probe._execute("SELECT pg_sleep(3)", (), what="it") is None  # cancelled at 1s
+        assert probe._execute("SELECT current_setting('statement_timeout')", (), what="it") == ("1s",)
+        assert probe._execute("SELECT current_setting('application_name')", (), what="it") == ("rsa-it",)
+        assert probe._execute("SELECT pg_sleep(3)", (), what="it") is None  # still enforced
+        # And ordinary probes still work after two cancellations.
+        assert probe.column_stats("accounts", ["account_id"], sample=False) == {"account_id": (500, 500, 500)}
+    finally:
+        probe.close()
+
+
+def test_a_spent_budget_leaves_tables_undecided(keyless_schema):
+    schema = PostgresConnector(_DSN, schema_name=SCHEMA).get_schema()
+    probe = PostgresValueSampler(_DSN, schema_name=SCHEMA, max_queries=1)
+    try:
+        profile = profile_primary_keys(schema, probe)
+        assert probe.stats["queries_run"] == 1 and probe.stats["budget_exhausted"] is True
+        assert profile.not_evaluated, "tables past the budget are undecided, not keyless"
+    finally:
+        probe.close()
+
+
+def test_a_wrong_password_is_tried_once(keyless_schema):
+    psycopg = pytest.importorskip("psycopg")
+    info = psycopg.conninfo.conninfo_to_dict(_DSN)
+    info["password"] = "definitely-wrong"
+    bad = PostgresValueSampler(psycopg.conninfo.make_conninfo(**info), schema_name=SCHEMA, max_queries=50)
+    try:
+        schema = PostgresConnector(_DSN, schema_name=SCHEMA).get_schema()
+        profile_primary_keys(schema, bad)
+        assert bad.stats["connect_failed"] is True
+        assert bad.stats["queries_run"] == 0
+    finally:
+        bad.close()

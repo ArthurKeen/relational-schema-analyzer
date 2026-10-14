@@ -1049,3 +1049,132 @@ class TestCreateValueSamplerDispatch:
         # until its own governor lands (DESIGN-ADDENDUM-bigquery D3).
         assert create_value_sampler("bigquery", "bigquery://project/dataset") is None
         assert create_value_sampler("oracle", "oracle://u:p@h/db") is None
+
+
+# ── PostgresValueSampler cost governance (opt-in) ──────────────────
+
+
+class _RecordingPgConn:
+    """A psycopg-shaped connection: records every statement, answers a fixed row."""
+
+    def __init__(self, row=(1.0,)):
+        self.statements: list[tuple] = []
+        self.commits = 0
+        self.row = row
+
+    def cursor(self):
+        conn = self
+
+        class _Cur:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+            def execute(self, query, params=None):
+                conn.statements.append((query, params))
+
+            def fetchone(self):
+                return conn.row
+
+        return _Cur()
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class TestPostgresSamplerGovernance:
+    def _patch_connect(self, monkeypatch, factory):
+        psycopg = pytest.importorskip("psycopg")
+        monkeypatch.setattr(psycopg, "connect", factory)
+
+    def test_ungoverned_by_default_and_touches_no_session_setting(self, monkeypatch):
+        conn = _RecordingPgConn()
+        self._patch_connect(monkeypatch, lambda *a, **k: conn)
+        s = PostgresValueSampler("postgresql://x/y")
+        for _ in range(5):
+            s.distinct_ratio("t", "c")
+        assert s.stats == {
+            "queries_run": 5,
+            "max_queries": None,
+            "cache_hits": 0,
+            "budget_exhausted": False,
+            "connect_failed": False,
+        }
+        assert not any("set_config" in q for q, _ in conn.statements)
+
+    def test_the_budget_caps_every_kind_of_probe(self, monkeypatch):
+        conn = _RecordingPgConn(row=(5, 5, 5))  # rows, non-null, distinct
+        self._patch_connect(monkeypatch, lambda *a, **k: conn)
+        s = PostgresValueSampler("postgresql://x/y", max_queries=2)
+        assert s.distinct_ratio("t", "c") is not None
+        assert s.column_stats("t", ["c"], sample=True) is not None
+        assert s.combo_stats("t", ["a", "b"], sample=True) is None  # third query: refused
+        assert s("t", "c", "u", "c") is None
+        assert s.stats["queries_run"] == 2 and s.stats["budget_exhausted"] is True
+        assert len(conn.statements) == 2
+
+    def test_a_failed_connection_is_attempted_once(self, monkeypatch):
+        attempts = []
+
+        def refuse(*a, **k):
+            attempts.append(1)
+            raise RuntimeError("password authentication failed")
+
+        self._patch_connect(monkeypatch, refuse)
+        s = PostgresValueSampler("postgresql://x/y", max_queries=50)
+        for _ in range(5):
+            assert s("t", "c", "u", "c") is None
+            assert s.column_stats("t", ["c"], sample=True) is None
+        assert len(attempts) == 1
+        assert s.stats["connect_failed"] is True and s.stats["queries_run"] == 0
+
+    def test_timeout_and_tag_are_set_once_and_committed(self, monkeypatch):
+        conn = _RecordingPgConn()
+        self._patch_connect(monkeypatch, lambda *a, **k: conn)
+        s = PostgresValueSampler(
+            "postgresql://x/y", statement_timeout_s=7, query_tag="r2g-suggest-keys:crm"
+        )
+        s.distinct_ratio("t", "c")
+        s.distinct_ratio("t", "c")
+        settings = [p for q, p in conn.statements if "set_config" in q]
+        assert settings == [("statement_timeout", "7000"), ("application_name", "r2g-suggest-keys:crm")]
+        # Committed: Postgres would otherwise undo them at the first rollback.
+        assert conn.commits == 1
+
+    def test_settings_are_reapplied_after_close(self, monkeypatch):
+        opened = []
+
+        def connect(*a, **k):
+            opened.append(_RecordingPgConn())
+            return opened[-1]
+
+        self._patch_connect(monkeypatch, connect)
+        s = PostgresValueSampler("postgresql://x/y", statement_timeout_s=5)
+        s.distinct_ratio("t", "c")
+        s.close()
+        s.distinct_ratio("t", "c")
+        assert len(opened) == 2
+        assert all(any("set_config" in q for q, _ in c.statements) for c in opened)
+
+    @pytest.mark.parametrize("kwargs", [{"max_queries": 0}, {"statement_timeout_s": 0}])
+    def test_unusable_settings_are_refused(self, kwargs):
+        with pytest.raises(ValueError):
+            PostgresValueSampler("postgresql://x/y", **kwargs)
+
+    def test_the_factory_passes_governance_through(self):
+        from relational_schema_analyzer.fk_inference import create_value_sampler
+
+        governed = create_value_sampler(
+            "postgresql", "postgresql://x/y", max_queries=9, statement_timeout_s=3, query_tag="t"
+        )
+        assert (governed.max_queries, governed.statement_timeout_s, governed.query_tag) == (9, 3, "t")
+        plain = create_value_sampler("postgresql", "postgresql://x/y")
+        assert (plain.max_queries, plain.statement_timeout_s, plain.query_tag) == (None, None, None)
