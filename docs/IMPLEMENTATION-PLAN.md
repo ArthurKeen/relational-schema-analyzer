@@ -448,6 +448,48 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     consumer type-checks against it today — `r2g` keeps its own mirrored copy, which this
     release makes stale.
 
+- **v0.9.4** — **keys discovered from the data on Postgres, including a natural key beside
+  a declared surrogate one.** `profile_primary_keys` / `draft_key_overlay` exist for sources
+  whose catalog declares no keys, and two things kept them from reaching a Postgres source
+  at all.
+  - *No Postgres probe.* They reach an engine through `KeyProbe` — `column_stats` and
+    `combo_stats` — and `SnowflakeValueSampler` was the only sampler implementing them
+    ([#18](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/18)).
+    `PostgresValueSampler` now does, in the same shape: screen on a bounded sample, where
+    a duplicate or NULL is conclusive, then confirm survivors over the whole table, since
+    only a full count can say *yes*. Both return `None` for "could not evaluate" rather
+    than a guess, which is what keeps a table in `not_evaluated` instead of being called
+    keyless.
+  - *Profiling skipped every table that declared a primary key*
+    ([#20](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/20)),
+    on the grounds that inference already treats a declared key as a candidate. True, and
+    it assumes the declared key is the one children reference — the assumption **v0.7.1**
+    was written to fix. So inference had learned to *target* a natural business key while
+    profiling still refused to *look* for one, and a schema like
+    `accounts(id PK, account_id)` yielded no relationships at all. Such tables are now
+    profiled for an *additional* candidate key.
+  - *Name evidence is the gate.* Uniqueness alone is far too weak on an already-keyed
+    table: at 20k rows `note`, `primary_champion` and `deployment_date` are each distinct
+    in every row and none is a key, and declaring those is worse than declaring nothing,
+    because an overlay reads as a curator's assertion. A column qualifies only when its
+    name carries the claim — named after its table, or an `_id`/`_key`/`_code`/`_no`/`_num`
+    identifier. A bare `id` is excluded, being the declared key itself.
+  - *Emitted as `uniqueConstraints`, never as a `primaryKey`.* The declared key stays the
+    primary key; what is discovered is another column that is also unique, and therefore a
+    legitimate FK target. Keyless tables are profiled first, so if the probe budget runs
+    out it runs out on the bonus rather than on the purpose; `find_additional_keys=False`
+    turns the second pass off.
+  - Measured on a live constraint-free Postgres where inference alone finds nothing: the
+    draft proposes the uniqueness *and* the references it unlocks. Cost is not the
+    constraint — six already-keyed tables profile in 11 queries and 153 ms, because one
+    query screens every column of a table at once.
+  - Also fixes a pre-existing gap found while reviewing: `PostgresValueSampler` built
+    identifiers without escaping an embedded quote, so a column legitimately named `a"b`
+    produced a syntax error, the query was caught, and the probe reported "could not
+    evaluate" — a silent capability gap, and exactly the case where *couldn't check* must
+    not read as *nothing there*. The class now quotes through `_qi`/`_qt` as the DuckDB and
+    Snowflake samplers already did.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
