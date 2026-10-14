@@ -76,6 +76,12 @@ logger = get_logger(__name__)
 #: distinguishable from a catalog-declared one by inspection of a snapshot alone.
 OVERLAY_CONSTRAINT_PREFIX = "overlay:"
 
+#: Prefix for a foreign key folded back from inference
+#: (:meth:`~relational_schema_analyzer.fk_inference.InferredForeignKey.to_foreign_key`).
+#: The second asserted-not-declared provenance: like an overlay key it is saved
+#: ``enforced=False``, so it is labelled, never laundered into a catalog constraint.
+INFERRED_CONSTRAINT_PREFIX = "inferred:"
+
 #: Key under ``Table.extra`` recording what the overlay supplied for that table.
 OVERLAY_EXTRA_KEY = "overlay"
 
@@ -428,6 +434,7 @@ def _resolve_columns(table: Table, columns: Any, *, what: str) -> list[str]:
 
 
 __all__ = [
+    "INFERRED_CONSTRAINT_PREFIX",
     "OVERLAY_CONSTRAINT_PREFIX",
     "OVERLAY_EXTRA_KEY",
     "OverlayError",

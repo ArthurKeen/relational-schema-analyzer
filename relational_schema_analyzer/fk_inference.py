@@ -123,17 +123,27 @@ class InferredForeignKey(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
     def to_foreign_key(self, constraint_name: Optional[str] = None) -> ForeignKey:
-        """Materialize the suggestion as a declared :class:`ForeignKey`.
+        """Materialize an accepted suggestion as a :class:`ForeignKey` -- labelled.
 
-        Lets callers fold an accepted candidate back into the physical schema
-        as if it had been declared. The relational analogue of the Arango
-        analyzer's edge-definition conversion (which stays in ``r2g``).
+        Lets callers fold an accepted candidate back into the physical schema. It
+        is saved ``enforced=False`` and, unless a name is given, named
+        ``inferred:<table>_<cols>_fk`` (the overlay's naming, so each key has its
+        own name). Folding it in "as if it had been declared", as this used to,
+        left ``enforced`` at ``True``, which the serializer omits: the key then
+        read as a constraint the source guarantees, and :mod:`.baseline` treats a
+        table with an enforced FK as authoritative and skips fallback inference
+        on it. The relational analogue of the Arango analyzer's edge-definition
+        conversion (which stays in ``r2g``).
         """
+        from .overlay import INFERRED_CONSTRAINT_PREFIX
+
         return ForeignKey(
             columns=list(self.columns),
             foreign_table=self.foreign_table,
             foreign_columns=list(self.foreign_columns),
-            constraint_name=constraint_name,
+            constraint_name=constraint_name
+            or f"{INFERRED_CONSTRAINT_PREFIX}{self.table}_{'_'.join(self.columns)}_fk",
+            enforced=False,
         )
 
 
