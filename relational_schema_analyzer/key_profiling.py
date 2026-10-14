@@ -89,6 +89,12 @@ class KeyProfile:
     candidates: dict[str, list[KeyCandidate]] = field(default_factory=dict)
     not_evaluated: dict[str, str] = field(default_factory=dict)
     declared: list[str] = field(default_factory=list)
+    #: Additional candidate keys on tables that already declare a primary key.
+    #: Kept apart from ``candidates`` because these are *not* proposed primary keys —
+    #: the declared key stays the primary key. These are columns that are also unique,
+    #: and therefore legitimate targets for a foreign key, which is the whole reason
+    #: they matter: FK inference aims at any candidate key, not only the PK.
+    additional: dict[str, list[KeyCandidate]] = field(default_factory=dict)
 
     def best(self, table: str) -> Optional[KeyCandidate]:
         found = self.candidates.get(table) or []
@@ -138,6 +144,27 @@ _DESCRIPTIVE = re.compile(r"(name|email|title|description|url|phone|address)", r
 
 #: Below this many rows, "every value is distinct" is weak evidence.
 MIN_CONVINCING_ROWS = 10
+
+
+def _has_name_evidence(name: str, table: Table, table_names: set[str]) -> bool:
+    """Does this column's *name* support it being a key, beyond being unique today?
+
+    The gate on additional keys for an already-keyed table. Uniqueness alone is far
+    too weak there: on a 20k-row sample ``note``, ``primary_champion`` and
+    ``deployment_date`` are all distinct in every row and none of them is a key.
+    Declaring those would be worse than declaring nothing, because an overlay is
+    taken as a curator's assertion.
+
+    So a name has to carry the claim — ``account_id`` in ``accounts``, or any
+    ``_id`` / ``_key`` / ``_code`` / ``_no`` / ``_num`` style identifier. A bare
+    ``id`` is excluded: on a table that already declares a primary key, that is
+    almost always the declared key itself.
+    """
+    low = name.lower()
+    if low == "id":
+        return False
+    own = {f"{n}{sep}id" for n in _table_names(table.name) for sep in ("_", "")}
+    return low in own or _identifier(name, table_names)
 
 
 def _suitable(col: Any) -> bool:
@@ -206,8 +233,15 @@ def profile_primary_keys(
     *,
     tables: Optional[Sequence[str]] = None,
     max_pair_checks: int = 10,
+    find_additional_keys: bool = True,
 ) -> KeyProfile:
-    """Propose primary keys for tables that declare none. Never mutates ``schema``."""
+    """Propose primary keys for tables that declare none. Never mutates ``schema``.
+
+    ``find_additional_keys`` also looks for a *second* candidate key on tables that
+    already declare one, reported in :attr:`KeyProfile.additional`. Only columns whose
+    name supports the claim are considered, and they are never proposed as primary
+    keys — see :func:`_profile_additional_keys`.
+    """
     profile = KeyProfile()
     names = list(tables) if tables is not None else list(schema.tables)
     # Every table's name and singular, for recognising ORDERID-style identifiers.
@@ -222,13 +256,16 @@ def profile_primary_keys(
         for n in _table_names(other):
             references[f"{n}_id"] = other
             references[f"{n}id"] = other
+    # Keyless tables first. Both passes spend the same probe budget, and proposing a
+    # primary key for a table that has none is the point of this function; finding an
+    # extra candidate key on a table that already has one is the bonus. If the budget
+    # runs out it must run out on the bonus.
+    keyed = [n for n in names if (t := schema.tables.get(n)) is not None and t.primary_key]
+    names = [n for n in names if n not in set(keyed)]
     for tname in names:
         table = schema.tables.get(tname)
         if table is None:
             profile.not_evaluated[tname] = "not in schema"
-            continue
-        if table.primary_key:
-            profile.declared.append(tname)
             continue
         if getattr(table, "is_view", False):
             profile.not_evaluated[tname] = "view: uniqueness of a view is not a key"
@@ -240,7 +277,88 @@ def profile_primary_keys(
             )
             continue
         _profile_table(table, probe, profile, max_pair_checks, references, table_names)
+
+    # Second pass: tables that already declare a primary key. A declared surrogate key
+    # does not mean there is no *other* unique column — and when children reference the
+    # natural business key rather than the surrogate, that other column is the only
+    # thing FK inference can aim at. Skipping these tables was why a schema like
+    # `accounts(id PK, account_id)` yielded no relationships at all (#20).
+    for tname in keyed:
+        table = schema.tables[tname]
+        profile.declared.append(tname)
+        if find_additional_keys and not getattr(table, "is_view", False):
+            _profile_additional_keys(table, probe, profile, references, table_names)
     return profile
+
+
+def _profile_additional_keys(
+    table: Table,
+    probe: KeyProbe,
+    profile: KeyProfile,
+    references: dict[str, str],
+    table_names: set[str],
+) -> None:
+    """Unique columns on an already-keyed table, where the *name* supports it too.
+
+    Single columns only. A composite search here would spend real budget hunting
+    something FK inference has no particular use for on a table that already has a key.
+    """
+    covered = {c.lower() for c in table.primary_key}
+    for u in table.unique_constraints:
+        covered.update(c.lower() for c in u)
+    usable = [
+        (i, c)
+        for i, c in enumerate(table.columns)
+        if _suitable(c)
+        and c.name.lower() not in covered
+        and _has_name_evidence(c.name, table, table_names)
+    ]
+    if not usable:
+        return
+
+    sample = probe.column_stats(table.name, [c.name for _, c in usable], sample=True)
+    if sample is None:
+        profile.not_evaluated.setdefault(
+            table.name, "probe declined while looking for additional keys"
+        )
+        return
+    sampled_rows = next(iter(sample.values()))[0] if sample else 0
+    if sampled_rows == 0:
+        return
+    survivors = [(i, c) for i, c in usable if _is_unique_non_null(sample[c.name])]
+    if not survivors:
+        return
+
+    exact = sample
+    if sampled_rows >= probe.limit:
+        confirmed = probe.column_stats(table.name, [c.name for _, c in survivors], sample=False)
+        if confirmed is None:
+            profile.not_evaluated.setdefault(
+                table.name, "probe declined confirming an additional key"
+            )
+            return
+        exact = confirmed
+
+    found: list[KeyCandidate] = []
+    for position, col in survivors:
+        stats = exact[col.name]
+        if not _is_unique_non_null(stats):
+            continue
+        score, reasons = _score_single(table, col, position, stats[0], references, table_names)
+        found.append(
+            KeyCandidate(
+                table.name,
+                (col.name,),
+                score,
+                stats[0],
+                stats[2],
+                tuple([*reasons, "the table already declares a primary key; this is an "
+                       "additional candidate key, not a replacement"]),
+            )
+        )
+    if found:
+        found.sort(key=lambda k: (-k.score, k.columns))
+        profile.additional[table.name] = found
 
 
 def _profile_table(
@@ -365,6 +483,10 @@ def draft_key_overlay(
     1. Primary keys: the best :func:`profile_primary_keys` candidate per table,
        if it scores at least ``min_pk_score``. Every other candidate is listed in
        the table's ``description`` so the reviewer sees the alternatives.
+    1b. *Additional* candidate keys on tables that already declare a primary key,
+       emitted as ``uniqueConstraints``. A surrogate primary key does not mean there
+       is no natural business key beside it, and when children reference that key
+       instead, it is the only target FK inference has (#20).
     2. Foreign keys: FK inference run against the schema *with those proposed
        keys applied* -- without them a key-less source gives inference no
        targets. When ``sampler`` is given (``probe`` usually doubles as it),
@@ -381,6 +503,25 @@ def draft_key_overlay(
 
     for tname in profile.declared:
         draft.no_key_proposed[tname] = "the source already declares a primary key"
+    # An already-keyed table can still carry a second candidate key, and when children
+    # reference the business key rather than the surrogate, that is the only thing FK
+    # inference can aim at (#20). Emitted as uniqueConstraints, never as a primaryKey:
+    # the declared key stays the primary key.
+    for tname, ranked in profile.additional.items():
+        keys = [list(c.columns) for c in ranked if c.score >= min_pk_score]
+        if not keys:
+            continue
+        spec = specs.setdefault(tname, {})
+        spec["uniqueConstraints"] = keys
+        spec["description"] = "; ".join(
+            f"{list(c.columns)} unique over {c.rows} rows ({', '.join(c.reasons)})"
+            for c in ranked
+            if c.score >= min_pk_score
+        )
+        draft.no_key_proposed[tname] = (
+            "the source already declares a primary key; "
+            f"additional candidate key(s) proposed: {keys}"
+        )
     draft.no_key_proposed.update(profile.not_evaluated)
     for tname, ranked in profile.candidates.items():
         best = ranked[0] if ranked else None
@@ -407,10 +548,20 @@ def draft_key_overlay(
             )
         specs[tname] = {"primaryKey": list(best.columns), "description": " ".join(lines)}
 
-    # FK inference needs targets: give it the proposed keys.
+    # FK inference needs targets: give it the proposed keys. Both kinds — a proposed
+    # primary key for a keyless table, and an additional unique key on a table that
+    # already has one. The second is the whole point of #20: when children reference the
+    # business key rather than the surrogate, it is the only target inference can use.
+    _KEY_FIELDS = ("primaryKey", "uniqueConstraints")
     keyed = apply_key_overlay(
         schema,
-        {"version": 1, "tables": {t: {"primaryKey": s["primaryKey"]} for t, s in specs.items()}},
+        {
+            "version": 1,
+            "tables": {
+                t: {k: v for k, v in spec.items() if k in _KEY_FIELDS}
+                for t, spec in specs.items()
+            },
+        },
     )
     options = InferenceOptions(sample_overlap=sampler is not None)
     for fk in infer_foreign_keys(keyed, options=options, sampler=sampler):

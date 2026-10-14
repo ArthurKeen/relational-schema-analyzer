@@ -153,3 +153,107 @@ def test_identifiers_that_need_escaping_are_handled(parts):
             f"column {col!r} could not be profiled"
         )
     assert probe.combo_stats("odd", ['a"b', "order"], sample=False) == (2, 2, 2)
+
+
+# ── Additional candidate keys on already-keyed tables (#20) ──────────────────
+
+
+@pytest.fixture()
+def surrogate_pk_schema():
+    """The shape that yielded nothing: a surrogate PK, and the real key undeclared.
+
+    Children reference ``account_id``; nothing declares it unique; ``accounts`` has a
+    ``bigserial`` primary key that no child points at. Before #20 every table here was
+    skipped for having a primary key, so the one fact that unlocks the references was
+    never looked for.
+    """
+    psycopg = pytest.importorskip("psycopg")
+    with psycopg.connect(_DSN, autocommit=True) as c:
+        c.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+        c.execute(f"CREATE SCHEMA {SCHEMA}")
+        c.execute(
+            f"CREATE TABLE {SCHEMA}.accounts (id bigserial PRIMARY KEY, account_id text, "
+            "account_name text, primary_champion text)"
+        )
+        c.execute(
+            f"INSERT INTO {SCHEMA}.accounts (account_id, account_name, primary_champion) "
+            "SELECT 'A'||g, 'name '||g, 'champ '||g FROM generate_series(1,500) g"
+        )
+        c.execute(f"CREATE TABLE {SCHEMA}.contracts (id bigserial PRIMARY KEY, account_id text)")
+        c.execute(
+            f"INSERT INTO {SCHEMA}.contracts (account_id) "
+            "SELECT 'A'||((g%500)+1) FROM generate_series(1,2000) g"
+        )
+    yield
+    with psycopg.connect(_DSN, autocommit=True) as c:
+        c.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+
+
+@pytest.fixture()
+def keyed_parts(surrogate_pk_schema):
+    schema = PostgresConnector(_DSN, schema_name=SCHEMA).get_schema()
+    probe = PostgresValueSampler(_DSN, schema_name=SCHEMA, limit=10_000)
+    yield schema, probe
+    probe.close()
+
+
+def test_a_natural_key_beside_a_surrogate_one_is_found(keyed_parts):
+    schema, probe = keyed_parts
+    profile = profile_primary_keys(schema, probe)
+    assert "accounts" in profile.declared, "the surrogate PK is still the declared key"
+    found = {c.columns for c in profile.additional.get("accounts", [])}
+    assert ("account_id",) in found, (
+        "account_id is unique, non-null and named after its table; without it there is "
+        "no target for the references children actually carry"
+    )
+
+
+def test_uniqueness_alone_is_not_enough(keyed_parts):
+    """`account_name` and `primary_champion` are distinct in every row here and are
+    not keys. Proposing them would be worse than proposing nothing, because an overlay
+    reads as a curator's assertion."""
+    schema, probe = keyed_parts
+    profile = profile_primary_keys(schema, probe)
+    proposed = {c.columns[0] for c in profile.additional.get("accounts", [])}
+    assert "account_name" not in proposed
+    assert "primary_champion" not in proposed
+
+
+def test_the_declared_key_is_never_re_proposed(keyed_parts):
+    schema, probe = keyed_parts
+    profile = profile_primary_keys(schema, probe)
+    for cands in profile.additional.values():
+        assert all(c.columns != ("id",) for c in cands), (
+            "`id` is the declared primary key; re-proposing it says nothing"
+        )
+
+
+def test_additional_keys_are_unique_constraints_not_primary_keys(keyed_parts):
+    schema, probe = keyed_parts
+    overlay = draft_key_overlay(schema, probe, sampler=probe).overlay
+    accounts = overlay["tables"]["accounts"]
+    assert accounts.get("uniqueConstraints") == [["account_id"]]
+    assert "primaryKey" not in accounts, (
+        "the table already declares one; proposing another would overwrite a fact the "
+        "source asserted with one this engine guessed"
+    )
+
+
+def test_the_generated_draft_unlocks_the_references(keyed_parts):
+    """End to end: from a schema where inference finds nothing, to the references."""
+    schema, probe = keyed_parts
+    assert infer_foreign_keys(schema, options=InferenceOptions()) == []
+    overlay = draft_key_overlay(schema, probe, sampler=probe).overlay
+    drafted = {
+        (t, fk["columns"][0], fk["references"]["table"], fk["references"]["columns"][0])
+        for t, body in overlay["tables"].items()
+        for fk in (body.get("foreignKeys") or [])
+    }
+    assert ("contracts", "account_id", "accounts", "account_id") in drafted
+
+
+def test_the_second_pass_can_be_turned_off(keyed_parts):
+    schema, probe = keyed_parts
+    profile = profile_primary_keys(schema, probe, find_additional_keys=False)
+    assert profile.additional == {}
+    assert "accounts" in profile.declared
