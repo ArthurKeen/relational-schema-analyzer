@@ -215,6 +215,24 @@ class TestKeyProbeCoverage:
             "KEY_PROBE_CAPABLE deliberately, and say so in the release history."
         )
 
+    @pytest.mark.parametrize("name", sorted(KEY_PROBE_CAPABLE))
+    def test_every_key_probe_is_also_governable(self, name):
+        """Key profiling runs whole-table counts, so a caller must be able to bound it.
+
+        r2g's ``suggest-keys`` promises a query budget, a per-query timeout, a query
+        tag and a cost report on every source it accepts. A sampler that gains
+        column_stats/combo_stats without these would run unbounded on a production
+        database the moment a caller opened the command to that source type.
+        """
+        import inspect
+
+        cls = getattr(fk, name)
+        params = inspect.signature(cls.__init__).parameters
+        assert {"max_queries", "statement_timeout_s", "query_tag"} <= set(params), (
+            f"{name} profiles keys but cannot be governed"
+        )
+        assert isinstance(getattr(cls, "stats", None), property), f"{name} reports no stats"
+
     def test_the_gap_is_still_real(self):
         """Fails once every sampler can profile keys — then this class can go."""
         missing = set(SAMPLER_REGISTRY) - self.KEY_PROBE_CAPABLE
