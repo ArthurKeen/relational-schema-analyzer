@@ -581,7 +581,10 @@ class TestForeignKeyConversion:
         assert fk.foreign_table == "users"
         assert fk.foreign_columns == ["id"]
         assert fk.is_composite is False
-        assert fk.constraint_name is None
+        # Labelled, not laundered: an accepted guess is never an enforced constraint.
+        assert fk.constraint_name == "inferred:orders_user_id_fk"
+        assert fk.enforced is False
+        assert '"enforced":false' in fk.model_dump_json()
 
     def test_composite_foreign_key_keeps_column_order(self):
         c = InferredForeignKey(
@@ -594,6 +597,7 @@ class TestForeignKeyConversion:
         )
         fk = c.to_foreign_key(constraint_name="lines_to_order_products")
         assert fk.constraint_name == "lines_to_order_products"
+        assert fk.enforced is False  # an explicit name does not make it declared
         assert fk.columns == ["order_id", "product_id"]
         assert fk.foreign_columns == ["order_id", "product_id"]
         assert fk.is_composite is True
@@ -1178,3 +1182,4 @@ class TestPostgresSamplerGovernance:
         assert (governed.max_queries, governed.statement_timeout_s, governed.query_tag) == (9, 3, "t")
         plain = create_value_sampler("postgresql", "postgresql://x/y")
         assert (plain.max_queries, plain.statement_timeout_s, plain.query_tag) == (None, None, None)
+
