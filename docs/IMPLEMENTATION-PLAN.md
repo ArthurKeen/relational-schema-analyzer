@@ -490,6 +490,27 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     not read as *nothing there*. The class now quotes through `_qi`/`_qt` as the DuckDB and
     Snowflake samplers already did.
 
+- **v0.9.5** — **key profiling on Postgres can be bounded.** 0.9.4 let
+  `PostgresValueSampler` profile keys, and confirming a candidate runs `COUNT(DISTINCT …)`
+  over the whole table — with no query budget, no per-query timeout, no query tag and no
+  `stats`, all of which `SnowflakeValueSampler` has. A caller that promises those (r2g's
+  `suggest-keys`) could not offer Postgres without breaking them
+  ([#22](https://github.com/arango-solutions-org/relational-schema-analyzer/pull/22),
+  part of [#18](https://github.com/arango-solutions-org/relational-schema-analyzer/issues/18)).
+  - *Opt-in governance.* `max_queries`, `statement_timeout_s` and `query_tag`
+    (`application_name`) default to `None`, so FK inference and every existing caller are
+    unchanged. `stats` reports the same keys as Snowflake's, including `connect_failed`;
+    a failed connection is attempted once per sampler, not once per probe.
+    `create_value_sampler` passes all three through to the Postgres and Snowflake samplers.
+  - *The timeout has to be committed.* Postgres undoes a session setting when its
+    transaction rolls back, and the first cancelled probe does roll back — so an
+    uncommitted timeout protects one query and is then silently gone. Set with
+    parameterised `set_config` and committed; a live test fails if the commit is removed.
+  - *Contract.* `tests/test_sampler_contract.py` now requires every sampler that profiles
+    keys to also accept the three settings and report `stats`, so a future MySQL or SQL
+    Server key probe cannot land ungoverned.
+  - No output or fingerprint change.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
