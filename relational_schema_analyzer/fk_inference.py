@@ -466,6 +466,41 @@ def _build_candidate_key_index(schema: Schema) -> dict[str, list[tuple[str, str,
     return idx
 
 
+def _partition_family(table: Table) -> str:
+    """The table this one's rows really belong to: its partition parent, or itself.
+
+    A partition holds part of its parent's rows under its own name, so a reference
+    between a parent and its partition — or between two siblings — is not a
+    relationship. It is the same table twice.
+
+    Only *within* a family, though. A partition's foreign keys to other tables are
+    perfectly real: PostgreSQL records them on the child, which is why the connector's
+    ``annotate_partition_metadata`` rolls them up to the parent. Excluding partition
+    children outright therefore destroys genuine keys — measured on Pagila, it cut
+    recall from 0.974 to 0.513 (#27).
+
+    Pagila is where this surfaced: ``payment`` has seven partitions, and inference
+    proposed a composite key from the parent to each child, from each child back, and
+    between every pair of siblings. **56 of the 60 wrong proposals across the whole
+    corpus came from that one table.**
+
+    Note that a table is trivially in its own family, so the check also rejects a
+    self-reference. That is invisible today because every candidate path already
+    excludes one — but ``category.parent_id -> category.category_id`` is a real
+    pattern, and anyone adding support for it has to relax this too, not only the
+    guards that look like they are the ones in the way.
+    """
+    return (table.partition_of or table.name).lower()
+
+
+def _same_partition_family(schema: Schema, a: str, b: str) -> bool:
+    """Are these two table names the same underlying table, via partitioning?"""
+    ta, tb = schema.tables.get(a), schema.tables.get(b)
+    if ta is None or tb is None:
+        return False
+    return _partition_family(ta) == _partition_family(tb)
+
+
 def _build_declared_fk_index(schema: Schema) -> dict[str, set[tuple[str, ...]]]:
     """Index ``{table_name: {tuple(fk_columns), ...}}`` for existing FKs."""
     idx: dict[str, set[tuple[str, ...]]] = {}
@@ -618,6 +653,8 @@ def _make_candidate(
     foreign_tbl = schema.tables.get(foreign_table)
     if local_tbl is None or foreign_tbl is None:
         return None
+    if _same_partition_family(schema, table, foreign_table):
+        return None  # the same table twice; see _partition_family
 
     confidence = base_confidence
     details = list(evidence)
@@ -716,6 +753,8 @@ def _find_composite_candidates(
         for local_table, local in schema.tables.items():
             if local_table == foreign_table:
                 continue
+            if _same_partition_family(schema, local_table, foreign_table):
+                continue  # a parent and its partition are the same table
             local_pk_set = set(local.primary_key)
             # Require every PK column name to be present in the local
             # table as a non-PK-only column (it may still participate
