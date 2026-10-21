@@ -17,7 +17,7 @@ first job is to state where we are, not to defend it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 from relational_schema_analyzer.fk_inference import InferenceOptions, infer_foreign_keys
 from relational_schema_analyzer.types import PhysicalSchema
@@ -25,6 +25,13 @@ from relational_schema_analyzer.types import PhysicalSchema
 #: A foreign key, normalized for comparison: case folded, column order preserved.
 #: Order matters — ``(a, b) -> (x, y)`` is a different key from ``(b, a) -> (x, y)``.
 Ref = tuple[str, tuple[str, ...], str, tuple[str, ...]]
+
+#: A primary key: ``(table, columns)``. A different shape from :data:`Ref`, which is
+#: why :class:`Score` is generic over what it holds rather than claiming everything is
+#: a ``Ref`` and silencing the type checker where it is not.
+Key = tuple[str, tuple[str, ...]]
+
+Item = Union[Ref, Key]
 
 
 def _ref(table: str, cols: Iterable[str], ftable: str, fcols: Iterable[str]) -> Ref:
@@ -79,29 +86,48 @@ class Score:
     expected: int
     proposed: int
     correct: int
-    missed: set[Ref] = field(default_factory=set)
-    spurious: set[Ref] = field(default_factory=set)
+    missed: set[Item] = field(default_factory=set)
+    spurious: set[Item] = field(default_factory=set)
 
     @property
-    def precision(self) -> float:
-        """Of what it proposed, how much was real. 1.0 when it proposed nothing."""
-        return self.correct / self.proposed if self.proposed else 1.0
+    def precision(self) -> Optional[float]:
+        """Of what it proposed, how much was real — or ``None`` if it proposed nothing.
+
+        Undefined, not perfect. Returning 1.0 for an empty proposal would score a
+        change that breaks inference entirely as ``precision=1.000, recall=0.000``:
+        the instrument built to catch regressions reporting the largest possible one
+        as half-right. An undefined ratio has to read as undefined.
+        """
+        return self.correct / self.proposed if self.proposed else None
 
     @property
-    def recall(self) -> float:
-        """Of what was real, how much it found."""
-        return self.correct / self.expected if self.expected else 1.0
+    def recall(self) -> Optional[float]:
+        """Of what was real, how much it found — or ``None`` if nothing was declared.
+
+        Same reasoning. A schema that declares no foreign keys has no answer to be
+        measured against, and RSA's target domain is full of them: scoring one 1.000
+        while it proposes keys that are in no truth set is the most flattering
+        possible lie.
+        """
+        return self.correct / self.expected if self.expected else None
 
     @property
-    def f1(self) -> float:
+    def f1(self) -> Optional[float]:
+        """``None`` unless both precision and recall are defined and not both zero."""
         p, r = self.precision, self.recall
-        return 2 * p * r / (p + r) if (p + r) else 0.0
+        if p is None or r is None or (p + r) == 0:
+            return None
+        return 2 * p * r / (p + r)
+
+    @staticmethod
+    def _fmt(value: Optional[float]) -> str:
+        return "  n/a" if value is None else f"{value:.3f}"
 
     def line(self) -> str:
         return (
             f"{self.corpus:12} expected={self.expected:3} proposed={self.proposed:3} "
-            f"correct={self.correct:3}  precision={self.precision:.3f} "
-            f"recall={self.recall:.3f} f1={self.f1:.3f}"
+            f"correct={self.correct:3}  precision={self._fmt(self.precision)} "
+            f"recall={self._fmt(self.recall)} f1={self._fmt(self.f1)}"
         )
 
 
@@ -154,8 +180,8 @@ def score_primary_keys(schema: PhysicalSchema, profile: Any, *, corpus: str) -> 
         expected=len(truth),
         proposed=len(proposed),
         correct=len(correct),
-        missed={t for t in truth if t not in correct},  # type: ignore[misc]
-        spurious={p for p in proposed if p not in correct},  # type: ignore[misc]
+        missed={t for t in truth if t not in correct},
+        spurious={p for p in proposed if p not in correct},
     )
 
 

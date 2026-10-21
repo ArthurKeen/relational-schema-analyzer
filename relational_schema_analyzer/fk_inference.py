@@ -483,8 +483,14 @@ def _partition_family(table: Table) -> str:
     proposed a composite key from the parent to each child, from each child back, and
     between every pair of siblings. **56 of the 60 wrong proposals across the whole
     corpus came from that one table.**
+
+    Note that a table is trivially in its own family, so the check also rejects a
+    self-reference. That is invisible today because every candidate path already
+    excludes one — but ``category.parent_id -> category.category_id`` is a real
+    pattern, and anyone adding support for it has to relax this too, not only the
+    guards that look like they are the ones in the way.
     """
-    return (getattr(table, "partition_of", None) or table.name).lower()
+    return (table.partition_of or table.name).lower()
 
 
 def _same_partition_family(schema: Schema, a: str, b: str) -> bool:
