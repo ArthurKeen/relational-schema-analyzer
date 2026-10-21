@@ -66,7 +66,11 @@ _IRREGULAR_PLURAL = {v: k for k, v in _IRREGULAR.items()}
 
 #: ``-ie`` singulars, whose plural ``-ies`` must not become ``-y``.
 _IE_SINGULARS = frozenset(
-    {"movie", "cookie", "calorie", "zombie", "rookie", "selfie", "hoodie", "pie", "tie", "lie"}
+    {
+        "movie", "cookie", "calorie", "zombie", "rookie", "selfie", "hoodie", "pie", "tie",
+        "lie", "brownie", "genie", "smoothie", "collie", "magpie", "birdie", "prairie",
+        "reverie", "sortie", "lingerie",
+    }
 )
 #: ``-che`` singulars, whose plural ``-ches`` must not lose its ``e``.
 _CHE_SINGULARS = frozenset({"cache", "niche", "avalanche", "headache", "moustache", "cliche"})

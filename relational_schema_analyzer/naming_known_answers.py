@@ -86,6 +86,7 @@ PLURAL_SINGULAR_PAIRS: tuple[tuple[str, str], ...] = (
     ("movies", "movie"),
     ("cookies", "cookie"),
     ("calories", "calorie"),
+    ("brownies", "brownie"),
     # Irregular.
     ("people", "person"),
     ("children", "child"),
