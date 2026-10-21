@@ -567,44 +567,65 @@ projection — the whole core (Phases 0–5) landed together in the first releas
   - Still open on #27: the 17 scoring constants remain asserted rather than calibrated, and
     primary-key discovery is not yet scored against the corpus.
 
-- **Unreleased** — **declared value lists survive introspection on Postgres, MySQL and SQL
-  Server.** `CheckConstraint.enum_values` is what declared-CHECK discriminator detection
-  reads, and only the CSV connector and dbt's `accepted_values` ever filled it. The three
-  live connectors kept the raw expression and nothing else, so on a real database the README's
-  "discriminators come from declared `CHECK (col IN (…))` constraints" never happened:
-  declared detection found nothing unless a value enumerator was injected.
-  - **Output change — the schema fingerprint changes** for any Postgres, MySQL or SQL Server
-    schema with a CHECK that lists the values of one column, and for any MySQL schema with
-    an `ENUM` column. Consumers that key caches on `physicalSchemaFingerprint` will miss
-    once on upgrade, and bitemporal stamping will not carry `valid_from` forward by
-    fingerprint continuity on that first run (it falls back to the catalog date or the
-    observation time). `schema_diff` does not compare CHECK constraints, so it reports *no*
-    change while the fingerprint moves. Schemas with no such constraint fingerprint exactly
-    as before.
-  - *One shared parser* (`check_enum.py`, no dependencies) recognises a single-column
-    enumeration in the shape each database actually stores it, captured from Postgres 16,
-    MySQL 8.4 and SQL Server 2022 rather than guessed: Postgres's
-    `((status)::text = ANY ((ARRAY['a'::character varying, …])::text[]))`, MySQL's
-    `` (`status` in (_utf8mb4'a',…)) `` — which 8.4 reports with every quote escaped a
-    second time — and SQL Server's rewrite of `IN` into a reversed
-    `([status]='b' OR [status]='a')`. Doubled quotes, casts, integer lists and each
-    database's spelling of negative numbers are handled.
-  - *Conservative by design*: a wrong value list asserts a taxonomy the schema does not
-    have. Multi-column checks, ranges, functions of the column, `NOT IN`, any `AND`, `NULL`
-    in the list, decimals and string forms with uncertain escaping all leave `enum_values`
-    unset. So do constraints that do not guarantee the rows: Postgres `NOT VALID`, MySQL
-    `NOT ENFORCED`, and SQL Server disabled or untrusted (`WITH NOCHECK`) constraints.
-  - *MySQL* checks now also name their column (MySQL reports none), so detection can use
-    them, and `ENUM` columns on tables — whose values `DATA_TYPE` had been discarding — are
-    reported as a `CheckConstraint` named `<column>_enum` with the raw `COLUMN_TYPE` as its
-    expression, unless a CHECK already enumerates that column. The column's `data_type`
-    stays `enum`; views, which declare no constraints, get none.
-  - The raw expression is unchanged everywhere. Bundles, OWL and R2RML do not read CHECK
-    constraints, so with default options only the fingerprint moves. With
-    `discover_taxonomy=True`, a specialization whose parent carries an enumerating CHECK
-    is now reported as `mechanism: specialization` (confidence 0.90) rather than
-    `shared_key` (0.75), and the discriminator column leaves the abstract class's shared
-    properties.
+- **v0.10.0** — **declared value lists survive introspection, and singularize stops cutting
+  words short.** A minor version because both change output, and because r2g admits RSA only
+  below 0.10.0: r2g, and through it contextual-data-fabric, adopt this release deliberately.
+  - *Declared value lists survive introspection on Postgres, MySQL and SQL Server* (#32).
+    `CheckConstraint.enum_values` is what declared-CHECK discriminator detection reads, and only the CSV connector and dbt's `accepted_values` ever filled it. The three
+    live connectors kept the raw expression and nothing else, so on a real database the README's
+    "discriminators come from declared `CHECK (col IN (…))` constraints" never happened:
+    declared detection found nothing unless a value enumerator was injected.
+    - **Output change — the schema fingerprint changes** for any Postgres, MySQL or SQL Server
+      schema with a CHECK that lists the values of one column, and for any MySQL schema with
+      an `ENUM` column. Consumers that key caches on `physicalSchemaFingerprint` will miss
+      once on upgrade, and bitemporal stamping will not carry `valid_from` forward by
+      fingerprint continuity on that first run (it falls back to the catalog date or the
+      observation time). `schema_diff` does not compare CHECK constraints, so it reports *no*
+      change while the fingerprint moves. Schemas with no such constraint fingerprint exactly
+      as before.
+    - *One shared parser* (`check_enum.py`, no dependencies) recognises a single-column
+      enumeration in the shape each database actually stores it, captured from Postgres 16,
+      MySQL 8.4 and SQL Server 2022 rather than guessed: Postgres's
+      `((status)::text = ANY ((ARRAY['a'::character varying, …])::text[]))`, MySQL's
+      `` (`status` in (_utf8mb4'a',…)) `` — which 8.4 reports with every quote escaped a
+      second time — and SQL Server's rewrite of `IN` into a reversed
+      `([status]='b' OR [status]='a')`. Doubled quotes, casts, integer lists and each
+      database's spelling of negative numbers are handled.
+    - *Conservative by design*: a wrong value list asserts a taxonomy the schema does not
+      have. Multi-column checks, ranges, functions of the column, `NOT IN`, any `AND`, `NULL`
+      in the list, decimals and string forms with uncertain escaping all leave `enum_values`
+      unset. So do constraints that do not guarantee the rows: Postgres `NOT VALID`, MySQL
+      `NOT ENFORCED`, and SQL Server disabled or untrusted (`WITH NOCHECK`) constraints.
+    - *MySQL* checks now also name their column (MySQL reports none), so detection can use
+      them, and `ENUM` columns on tables — whose values `DATA_TYPE` had been discarding — are
+      reported as a `CheckConstraint` named `<column>_enum` with the raw `COLUMN_TYPE` as its
+      expression, unless a CHECK already enumerates that column. The column's `data_type`
+      stays `enum`; views, which declare no constraints, get none.
+    - The raw expression is unchanged everywhere. Bundles, OWL and R2RML do not read CHECK
+      constraints, so with default options only the fingerprint moves. With
+      `discover_taxonomy=True`, a specialization whose parent carries an enumerating CHECK
+      is now reported as `mechanism: specialization` (confidence 0.90) rather than
+      `shared_key` (0.75), and the discriminator column leaves the abstract class's shared
+      properties.
+  - *singularize keeps a `-se` plural's `e` and leaves `-s` singulars alone* (#30, PR #33;
+    arango-solutions-org/r2g-arango#30). It turned `warehouses` into `warehous`, `sizes` into
+    `siz`, `caches` into `cach`, `status` into `statu`, `analysis` into `analysi`, `news` into
+    `new` and `movies` into `movy`; `key_profiling` had been working around the `-us`/`-is`
+    half. Now `-es` is dropped only after a sibilant (`addresses`, `boxes`, `batches`) or a
+    singular that already ends in `s` (`statuses` → `status`), and otherwise only the `s`
+    goes; `-ses` → `-sis` for `-is` words; `-ies` → `-y` except `-ie` words; named sets cover
+    invariant words, singulars ending in `s` and a short irregular table; only the last word
+    of a compound inflects. `pluralize` is the inverse and is now case-insensitive
+    (`PARTITION` → `PARTITIONS`, not `PARTITIONs`).
+    - **Output change, in practice additive**: a table named with a `-se` plural or an `-s`
+      singular now matches its `<singular>_id` columns in FK inference, key profiling and
+      the CSV connector's key guess. Over every table and column name in Chinook, Northwind,
+      Pagila and contextual-data-fabric's committed CSI (265 identifiers), no table name or
+      FK prefix changes, so inference on those schemas is unchanged.
+    - *One list for every copy.* `relational_schema_analyzer/naming_known_answers.py` is
+      public: r2g and arangodb-schema-analyzer each keep their own singularizer and test it
+      against this list (ASA vendors it; r2g imports it). `tests/test_naming_known_answers.py`
+      runs each entry lower, UPPER, Capitalized and as a compound.
 
 Planned next:
 
