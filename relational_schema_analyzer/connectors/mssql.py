@@ -59,6 +59,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from ..bitemporal import CATALOG
 from ..bitemporal import to_iso as _iso
+from ..check_enum import enrich_check_constraint
 from ..log import get_logger
 from ..types import CheckConstraint, Column, ForeignKey, Schema, SourceProvenance, Table
 
@@ -299,7 +300,9 @@ class SQLServerConnector:
             pks = [row["COLUMN_NAME"] for row in cur.fetchall()]
 
             unique_sets = self._fetch_unique_constraints(cur, table_name, pks)
-            checks = self._fetch_check_constraints(cur, table_name)
+            checks = self._fetch_check_constraints(
+                cur, table_name, [c["COLUMN_NAME"] for c in columns_data]
+            )
             col_comments = self._fetch_column_comments(cur, table_name)
             table_comment = self._fetch_table_comment(cur, table_name)
 
@@ -456,11 +459,21 @@ class SQLServerConnector:
             grouped.setdefault(row["INDEX_NAME"], []).append(row["COLUMN_NAME"])
         return list(grouped.values())
 
-    def _fetch_check_constraints(self, cur: Any, table_name: str) -> list[CheckConstraint]:
+    def _fetch_check_constraints(
+        self, cur: Any, table_name: str, column_names: Optional[list[str]] = None
+    ) -> list[CheckConstraint]:
+        """CHECK constraints, with ``enum_values`` read from enumerating expressions.
+
+        SQL Server rewrites ``[status] IN ('a','b')`` as ``([status]='b' OR [status]='a')``,
+        which ``check_enum`` recognises. A disabled constraint (``NOCHECK CONSTRAINT``) is
+        not enforced, and an untrusted one (``WITH NOCHECK``) never checked existing rows,
+        so neither is read for values; both keep their raw expression as before.
+        """
         try:
             cur.execute(
                 """
-                SELECT cc.name AS name, cc.definition AS definition, col.name AS column_name
+                SELECT cc.name AS name, cc.definition AS definition, col.name AS column_name,
+                       cc.is_disabled AS is_disabled, cc.is_not_trusted AS is_not_trusted
                 FROM sys.check_constraints cc
                 JOIN sys.tables t ON t.object_id = cc.parent_object_id
                 JOIN sys.schemas s ON s.schema_id = t.schema_id
@@ -475,11 +488,12 @@ class SQLServerConnector:
         out: list[CheckConstraint] = []
         for r in cur.fetchall():
             cols = [r["column_name"]] if r.get("column_name") else []
-            out.append(
-                CheckConstraint(
-                    name=r.get("name"), expression=(r.get("definition") or ""), columns=cols
-                )
+            check = CheckConstraint(
+                name=r.get("name"), expression=(r.get("definition") or ""), columns=cols
             )
+            if column_names is not None and not (r.get("is_disabled") or r.get("is_not_trusted")):
+                check = enrich_check_constraint(check, column_names)
+            out.append(check)
         return out
 
     def _fetch_table_comment(self, cur: Any, table_name: str) -> Optional[str]:

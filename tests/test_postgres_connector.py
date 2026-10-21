@@ -45,6 +45,8 @@ _UNIQUES = {"users": [{"constraint_name": "users_email_key", "column_name": "ema
 # Unique indexes backing no constraint (pg_index query). Empty for the canonical
 # shop; individual tests patch it to exercise merge/dedupe.
 _UNIQUE_INDEXES: dict[str, list[dict]] = {}
+# CHECK constraints (pg_constraint contype='c'); patched per test.
+_CHECKS: dict[str, list[dict]] = {}
 _FKS = {
     "orders": [{"column_name": "user_id", "foreign_table_name": "users",
                 "foreign_column_name": "id", "constraint_name": "orders_user_id_fkey"}],
@@ -77,7 +79,7 @@ def _resolve(sql: str, params: tuple):
     if "c.contype = 'f'" in s:
         return list(_FKS.get(table, []))
     if "c.contype = 'c'" in s:
-        return []
+        return list(_CHECKS.get(table, []))
     return []
 
 
@@ -186,3 +188,40 @@ def test_merge_unique_sets_never_repeats_the_primary_key():
         ["id"],
     )
     assert merged == [["code"], ["region", "ext"]]
+
+
+def test_check_constraints_carry_their_enumerated_values(monkeypatch):
+    """The definitions are verbatim ``pg_get_constraintdef`` output from Postgres 16."""
+    monkeypatch.setattr(pg, "psycopg", _FakePsycopg())
+    monkeypatch.setitem(
+        _CHECKS,
+        "users",
+        [
+            {
+                "name": "users_status_check",
+                "definition": "CHECK (((status)::text = ANY ((ARRAY['active'::character "
+                "varying, 'closed'::character varying])::text[])))",
+                "columns": ["status"],
+            },
+            {
+                "name": "users_status_check1",
+                "definition": "CHECK ((status = ANY (ARRAY['a'::text, 'b'::text]))) NOT VALID",
+                "columns": ["status"],
+            },
+            {
+                "name": "users_id_check",
+                "definition": "CHECK (((id >= 1) AND (id <= 5)))",
+                "columns": ["id"],
+            },
+        ],
+    )
+    users = pg.PostgresConnector("postgresql://u:p@h/shop").get_schema().tables["users"]
+    by_name = {c.name: c for c in users.check_constraints}
+
+    status = by_name["users_status_check"]
+    assert status.enum_values == ["active", "closed"]
+    assert status.columns == ["status"]
+    assert status.expression.startswith("CHECK (((status)::text = ANY")  # raw, unchanged
+    # NOT VALID: existing rows were never checked, so the list is not a guarantee.
+    assert by_name["users_status_check1"].enum_values is None
+    assert by_name["users_id_check"].enum_values is None

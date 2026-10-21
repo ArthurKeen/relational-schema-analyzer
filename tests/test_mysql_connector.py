@@ -245,9 +245,20 @@ class TestSession:
 from tests import _conformance as conf  # noqa: E402
 
 
+# Patched per test: CHECK rows per table, extra columns per table, and whether the
+# server lacks TABLE_CONSTRAINTS.ENFORCED (MariaDB).
+_MYSQL_CHECKS: dict[str, list[dict]] = {}
+_MYSQL_EXTRA_COLUMNS: dict[str, list[dict]] = {}
+_MYSQL_FLAGS = {"no_enforced_column": False}
+
+
 def _mysql_resolve(sql: str, params: tuple):
     s = " ".join(sql.upper().split())
     table = params[1] if len(params) >= 2 else None
+    if "CHECK_CONSTRAINTS" in s:
+        if "ENFORCED" in s and _MYSQL_FLAGS["no_enforced_column"]:
+            raise RuntimeError("Unknown column 'tc.ENFORCED' in 'field list'")
+        return list(_MYSQL_CHECKS.get(table, []))
     if "VERSION()" in s:
         return [{"v": "8.0.36"}]
     if "INFORMATION_SCHEMA.TABLES" in s:
@@ -270,7 +281,7 @@ def _mysql_resolve(sql: str, params: tuple):
                 _mcol("total", "decimal", "YES", None, 3, ""),
             ],
             "active_users": [_mcol("id", "int", "YES", None, 1, "")],
-        }.get(table, [])
+        }.get(table, []) + list(_MYSQL_EXTRA_COLUMNS.get(table, []))
     if "CONSTRAINT_NAME = 'PRIMARY'" in s:
         return [{"COLUMN_NAME": "id"}] if table in ("users", "orders") else []
     if "CONSTRAINT_TYPE = 'UNIQUE'" in s:
@@ -344,3 +355,79 @@ class TestEnrichmentConformance:
         assert conf._find_col(users, "status").default == "active"
         assert conf._find_col(users, "email").is_unique is True
         assert conf._find_table(schema, "active_users").is_view is True
+
+
+# ── CHECK / ENUM value lists ─────────────────────────────────────────────
+
+# Verbatim CHECK_CLAUSE values from MySQL 8.4, which escapes every quote a second time.
+_MYSQL84_STATUS_CHECK = "(`status` in (_utf8mb4\\'active\\',_utf8mb4\\'it\\\\\\'s\\'))"
+
+
+class TestCheckAndEnumValues:
+    def _users(self, monkeypatch):
+        _install_fake_pymysql(monkeypatch, lambda **kw: _EnrichedConn())
+        return MySQLConnector("mysql://u:p@h/shop").get_schema().tables["users"]
+
+    def test_enforced_check_gains_values_and_its_column(self, monkeypatch):
+        monkeypatch.setitem(_MYSQL_CHECKS, "users", [
+            {"name": "users_chk_1", "definition": _MYSQL84_STATUS_CHECK, "enforced": "YES"},
+            {"name": "users_chk_2", "definition": "(`id` between 1 and 5)", "enforced": "YES"},
+        ])
+        checks = {c.name: c for c in self._users(monkeypatch).check_constraints}
+        assert checks["users_chk_1"].enum_values == ["active", "it's"]
+        # MySQL reports no columns for a CHECK; the parse supplies the one it names.
+        assert checks["users_chk_1"].columns == ["status"]
+        assert checks["users_chk_1"].expression == _MYSQL84_STATUS_CHECK
+        assert checks["users_chk_2"].enum_values is None
+        assert checks["users_chk_2"].columns == []
+
+    def test_not_enforced_check_keeps_only_its_expression(self, monkeypatch):
+        monkeypatch.setitem(_MYSQL_CHECKS, "users", [
+            {"name": "users_chk_1", "definition": "(`status` in (_utf8mb4'a',_utf8mb4'b'))",
+             "enforced": "NO"},
+        ])
+        (check,) = self._users(monkeypatch).check_constraints
+        assert check.enum_values is None
+        assert check.columns == []
+
+    def test_server_without_enforced_column_still_reads_checks(self, monkeypatch):
+        monkeypatch.setitem(_MYSQL_FLAGS, "no_enforced_column", True)
+        monkeypatch.setitem(_MYSQL_CHECKS, "users", [
+            {"name": "users_chk_1", "definition": "(`status` in (_utf8mb4'a',_utf8mb4'b'))"},
+        ])
+        (check,) = self._users(monkeypatch).check_constraints
+        assert check.enum_values == ["a", "b"]
+
+    def test_enum_column_is_reported_as_an_enumeration(self, monkeypatch):
+        tier = _mcol("tier", "enum", "YES", None, 5, "")
+        tier["COLUMN_TYPE"] = "enum('gold','it''s','back\\\\slash')"
+        flags = _mcol("flags", "set", "YES", None, 6, "")
+        flags["COLUMN_TYPE"] = "set('a','b')"
+        monkeypatch.setitem(_MYSQL_EXTRA_COLUMNS, "users", [tier, flags])
+        users = self._users(monkeypatch)
+        (check,) = users.check_constraints
+        assert check.name == "tier_enum"
+        assert check.columns == ["tier"]
+        assert check.enum_values == ["gold", "it's", "back\\slash"]
+        assert check.expression == tier["COLUMN_TYPE"]
+        assert conf._find_col(users, "tier").data_type == "enum"  # type mapping unchanged
+
+    def test_enum_column_already_enumerated_by_a_check_is_not_repeated(self, monkeypatch):
+        tier = _mcol("tier", "enum", "YES", None, 5, "")
+        tier["COLUMN_TYPE"] = "enum('gold','silver')"
+        monkeypatch.setitem(_MYSQL_EXTRA_COLUMNS, "users", [tier])
+        monkeypatch.setitem(_MYSQL_CHECKS, "users", [
+            {"name": "users_chk_1", "definition": "(`tier` in (_utf8mb4'gold'))",
+             "enforced": "YES"},
+        ])
+        (check,) = self._users(monkeypatch).check_constraints
+        assert check.name == "users_chk_1"
+
+    def test_a_view_with_an_enum_column_declares_no_constraint(self, monkeypatch):
+        tier = _mcol("tier", "enum", "YES", None, 2, "")
+        tier["COLUMN_TYPE"] = "enum('gold','silver')"
+        monkeypatch.setitem(_MYSQL_EXTRA_COLUMNS, "active_users", [tier])
+        _install_fake_pymysql(monkeypatch, lambda **kw: _EnrichedConn())
+        view = MySQLConnector("mysql://u:p@h/shop").get_schema().tables["active_users"]
+        assert view.is_view is True
+        assert view.check_constraints == []

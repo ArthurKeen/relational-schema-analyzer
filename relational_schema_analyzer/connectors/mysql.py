@@ -55,6 +55,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from ..bitemporal import CATALOG
 from ..bitemporal import to_iso as _iso
+from ..check_enum import enrich_check_constraint, parse_mysql_enum_type
 from ..log import get_logger
 from ..types import CheckConstraint, Column, ForeignKey, Schema, SourceProvenance, Table
 
@@ -281,7 +282,7 @@ class MySQLConnector:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE,
+                SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE,
                        COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_COMMENT
                 FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
@@ -318,7 +319,12 @@ class MySQLConnector:
             )
             fk_rows = cur.fetchall()
 
-            checks = self._fetch_check_constraints(cur, table_name)
+            checks = self._fetch_check_constraints(
+                cur, table_name, [c["COLUMN_NAME"] for c in columns_data]
+            )
+        if not is_view:
+            # A view reports its source column's ENUM type too, but declares no constraint.
+            checks.extend(_enum_column_checks(columns_data, checks))
 
         single_unique = {u[0] for u in unique_sets if len(u) == 1}
         if len(pks) == 1:
@@ -409,27 +415,78 @@ class MySQLConnector:
             grouped.setdefault(row["CONSTRAINT_NAME"], []).append(row["COLUMN_NAME"])
         return list(grouped.values())
 
-    def _fetch_check_constraints(self, cur: Any, table_name: str) -> list[CheckConstraint]:
-        """CHECK constraints (MySQL 8.0.16+ / MariaDB 10.2+). Best-effort."""
-        try:
-            cur.execute(
-                """
-                SELECT tc.CONSTRAINT_NAME AS name, cc.CHECK_CLAUSE AS definition
-                FROM information_schema.TABLE_CONSTRAINTS tc
-                JOIN information_schema.CHECK_CONSTRAINTS cc
-                  ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
-                  AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
-                WHERE tc.CONSTRAINT_TYPE = 'CHECK'
-                  AND tc.TABLE_SCHEMA = %s AND tc.TABLE_NAME = %s
-                """,
-                (self.schema_name, table_name),
-            )
-        except Exception:  # noqa: BLE001 - older servers lack CHECK_CONSTRAINTS
+    def _fetch_check_constraints(
+        self, cur: Any, table_name: str, column_names: Optional[list[str]] = None
+    ) -> list[CheckConstraint]:
+        """CHECK constraints (MySQL 8.0.16+ / MariaDB 10.2+). Best-effort.
+
+        ``enum_values`` (and the one column, which MySQL does not report) are read from an
+        enumerating clause -- ``(`status` in (_utf8mb4'a',_utf8mb4'b'))``. A constraint
+        declared ``NOT ENFORCED`` guarantees nothing about the rows, so it keeps its raw
+        expression only. MariaDB has no ``ENFORCED`` column; there the query is retried
+        without it and every constraint counts as enforced, which on MariaDB they are.
+        """
+        rows = None
+        for with_enforced in (True, False):
+            enforced_col = ", tc.ENFORCED AS enforced" if with_enforced else ""
+            try:
+                cur.execute(
+                    f"""
+                    SELECT tc.CONSTRAINT_NAME AS name, cc.CHECK_CLAUSE AS definition
+                           {enforced_col}
+                    FROM information_schema.TABLE_CONSTRAINTS tc
+                    JOIN information_schema.CHECK_CONSTRAINTS cc
+                      ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+                      AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+                    WHERE tc.CONSTRAINT_TYPE = 'CHECK'
+                      AND tc.TABLE_SCHEMA = %s AND tc.TABLE_NAME = %s
+                    """,  # noqa: S608 - enforced_col is one of two fixed fragments
+                    (self.schema_name, table_name),
+                )
+            except Exception:  # noqa: BLE001 - older servers lack CHECK_CONSTRAINTS
+                continue
+            rows = cur.fetchall()
+            break
+        if rows is None:
             return []
-        return [
-            CheckConstraint(name=r.get("name"), expression=(r.get("definition") or ""))
-            for r in cur.fetchall()
-        ]
+        out: list[CheckConstraint] = []
+        for r in rows:
+            check = CheckConstraint(name=r.get("name"), expression=(r.get("definition") or ""))
+            enforced = str(r.get("enforced") or "YES").upper() != "NO"
+            if column_names is not None and enforced:
+                check = enrich_check_constraint(check, column_names, dialect="mysql")
+            out.append(check)
+        return out
+
+
+def _enum_column_checks(
+    columns_data: list[dict[str, Any]], checks: list[CheckConstraint]
+) -> list[CheckConstraint]:
+    """A MySQL ``ENUM`` column declares its value set in its type; report it as one.
+
+    ``DATA_TYPE`` says only ``enum``, so the values were dropped along with the rest of
+    ``COLUMN_TYPE``. Each becomes a :class:`CheckConstraint` named ``<column>_enum`` (the
+    name the CSV connector gives its enumerations) whose expression is the raw
+    ``COLUMN_TYPE``, so the evidence stays visible. A column that a CHECK constraint
+    already enumerates is skipped rather than reported twice. ``SET`` is not an
+    enumeration -- a row may hold any subset -- and is not read.
+    """
+    covered = {c.columns[0].casefold() for c in checks if c.enum_values and len(c.columns) == 1}
+    out: list[CheckConstraint] = []
+    for c in columns_data:
+        if (c.get("DATA_TYPE") or "").lower() != "enum":
+            continue
+        name = c["COLUMN_NAME"]
+        column_type = c.get("COLUMN_TYPE") or ""
+        values = parse_mysql_enum_type(column_type)
+        if not values or name.casefold() in covered:
+            continue
+        out.append(
+            CheckConstraint(
+                name=f"{name}_enum", expression=column_type, columns=[name], enum_values=values
+            )
+        )
+    return out
 
 
 class MySQLSession:
