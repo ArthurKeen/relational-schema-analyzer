@@ -27,44 +27,152 @@ def split_identifier(name: str) -> list[str]:
     return [w for w in words if w]
 
 
+#: Same word in both forms; neither :func:`pluralize` nor :func:`singularize`
+#: changes it.
+_INVARIANT = frozenset(
+    {"data", "metadata", "media", "news", "series", "species", "gps", "sms", "dns"}
+)
+
+#: Singular words that already end in ``s``. Their plural adds ``es``, except
+#: ``-is`` words, which go to ``-es`` (``analysis`` -> ``analyses``).
+_SINGULAR_ENDING_IN_S = frozenset(
+    {
+        "status", "bus", "campus", "virus", "alias", "bonus", "census", "corpus",
+        "lens", "gas", "canvas", "atlas", "chassis",
+        "analysis", "diagnosis", "crisis", "thesis", "hypothesis", "synopsis",
+        "synthesis", "parenthesis", "emphasis",
+    }
+)
+
+#: Irregular plural -> singular. :func:`pluralize` uses the reverse.
+_IRREGULAR = {
+    "people": "person",
+    "children": "child",
+    "men": "man",
+    "women": "woman",
+    "heroes": "hero",
+    "potatoes": "potato",
+    "tomatoes": "tomato",
+    "echoes": "echo",
+    "quizzes": "quiz",
+    "criteria": "criterion",
+    "phenomena": "phenomenon",
+    "matrices": "matrix",
+    "vertices": "vertex",
+}
+#: Plural -> singular for :func:`singularize` only (``index`` pluralizes to ``indexes``).
+_SINGULARIZE_ONLY = {"indices": "index"}
+_IRREGULAR_PLURAL = {v: k for k, v in _IRREGULAR.items()}
+
+#: ``-ie`` singulars, whose plural ``-ies`` must not become ``-y``.
+_IE_SINGULARS = frozenset(
+    {"movie", "cookie", "calorie", "zombie", "rookie", "selfie", "hoodie", "pie", "tie", "lie"}
+)
+#: ``-che`` singulars, whose plural ``-ches`` must not lose its ``e``.
+_CHE_SINGULARS = frozenset({"cache", "niche", "avalanche", "headache", "moustache", "cliche"})
+
+
+def _same_case(target: str, like: str) -> str:
+    """Spell ``target`` in the case of ``like`` (UPPER, Capitalized or lower)."""
+    if like.isupper():
+        return target.upper()
+    if like[:1].isupper():
+        return target[:1].upper() + target[1:]
+    return target
+
+
+def _split_tail(word: str) -> tuple[str, str]:
+    """``(head, tail)`` where ``tail`` is the last word of the identifier, so a
+    compound (``ORDER_STATUS``, ``usage_metrics``) inflects only its last word."""
+    words = split_identifier(word)
+    if words and word.endswith(words[-1]):
+        tail = words[-1]
+        return word[: len(word) - len(tail)], tail
+    return "", word
+
+
+def _singular_word(word: str) -> str:
+    low = word.lower()
+    if low in _INVARIANT or low in _SINGULAR_ENDING_IN_S:
+        return word
+    irregular = _IRREGULAR.get(low) or _SINGULARIZE_ONLY.get(low)
+    if irregular is not None:
+        return _same_case(irregular, word)
+    if low.endswith("ies") and len(word) > 3:
+        if low[:-1] in _IE_SINGULARS:
+            return word[:-1]
+        return word[:-3] + ("Y" if word[-1].isupper() else "y")
+    if low.endswith("es") and len(word) > 3:
+        stem = low[:-2]
+        if stem + "is" in _SINGULAR_ENDING_IN_S:  # analyses -> analysis
+            return word[:-2] + ("IS" if word[-1].isupper() else "is")
+        if stem in _SINGULAR_ENDING_IN_S or stem.endswith(("ss", "x", "sh", "zz")):
+            return word[:-2]
+        if stem.endswith("ch") and stem + "e" not in _CHE_SINGULARS:
+            return word[:-2]
+        # Otherwise the singular ends in e (warehouses, sizes, caches): drop only the s.
+    if low.endswith("s") and not low.endswith("ss") and len(word) > 1:
+        return word[:-1]
+    return word
+
+
+def _plural_word(word: str) -> str:
+    low = word.lower()
+    upper = word[-1].isupper()
+    if low in _INVARIANT:
+        return word
+    irregular = _IRREGULAR_PLURAL.get(low)
+    if irregular is not None:
+        return _same_case(irregular, word)
+    if low in _SINGULAR_ENDING_IN_S and low.endswith("is"):
+        return word[:-2] + ("ES" if upper else "es")
+    if low.endswith("y") and len(word) > 1 and low[-2] not in "aeiou":
+        return word[:-1] + ("IES" if upper else "ies")
+    if low.endswith(("s", "x", "z", "ch", "sh")):
+        return word + ("ES" if upper else "es")
+    return word + ("S" if upper else "s")
+
+
 def pluralize(word: str) -> str:
     """Best-effort English plural for table / relationship name heuristics.
 
-    Intentionally simple (no irregular-noun table): ``y`` after a consonant →
-    ``ies``; sibilant endings (``s``/``x``/``z``/``ch``/``sh``) → ``es``; else
-    append ``s``. Used only for fuzzy name matching, never for stored names.
+    ``y`` after a consonant -> ``ies``; sibilant endings (``s``/``x``/``z``/
+    ``ch``/``sh``) -> ``es``; ``-is`` singulars -> ``-es``; a short irregular
+    table (``person`` -> ``people``); words that do not change (``data``,
+    ``series``); else append ``s``. Only the last word of a compound is
+    inflected. Matching is case-insensitive and added letters follow the case
+    of the word's last letter. Used only for fuzzy name matching, never for
+    stored names. Checked against :mod:`.naming_known_answers`.
     """
     if not word:
         return word
-    if word.endswith("y") and len(word) > 1 and word[-2] not in "aeiou":
-        return word[:-1] + "ies"
-    if word.endswith(("s", "x", "z", "ch", "sh")):
-        return word + "es"
-    return word + "s"
+    head, tail = _split_tail(word)
+    return head + _plural_word(tail)
 
 
 def singularize(word: str) -> str:
     """Best-effort English singular, the inverse of :func:`pluralize`.
 
-    ``ies`` → ``y``; ``ses``/``ches``/``shes``/``xes``/``zes`` → drop ``es``; a
-    trailing ``s`` (but not ``ss``) → drop ``s``. Used only for fuzzy name
-    matching (e.g. ``orders`` ↔ ``order``), never for stored names.
+    ``ies`` -> ``y`` (but ``movies`` -> ``movie``); ``-es`` is dropped only
+    after a sibilant (``addresses``, ``boxes``, ``batches``) or a singular that
+    already ends in ``s`` (``statuses`` -> ``status``); any other ``-es`` keeps
+    its ``e`` (``warehouses`` -> ``warehouse``, ``sizes`` -> ``size``); a
+    trailing ``s`` (not ``ss``) is dropped; singular words that end in ``s``
+    (``status``, ``analysis``), invariant words (``news``, ``series``) and a
+    short irregular table (``people`` -> ``person``) are handled by name. Only
+    the last word of a compound is inflected (``ORDER_STATUS`` stays put).
 
     Matching is case-insensitive and the replacement follows the case of the
-    trailing letter, so Snowflake-style ``CUSTOMERS`` singularizes like
-    ``customers``. It used to come back unchanged, which silently disabled
-    every upper-case match (the same fix as r2g-arango#4).
+    word, so Snowflake-style ``CUSTOMERS`` singularizes like ``customers`` (the
+    same fix as r2g-arango#4). Used only for fuzzy name matching (e.g.
+    ``orders`` <-> ``order``), never for stored names. Checked against
+    :mod:`.naming_known_answers`, the list every copy of this function shares
+    (r2g-arango#30).
     """
     if not word:
         return word
-    lower = word.lower()
-    if lower.endswith("ies") and len(word) > 3:
-        return word[:-3] + ("Y" if word[-1].isupper() else "y")
-    if lower.endswith(("ses", "ches", "shes", "xes", "zes")):
-        return word[:-2]
-    if lower.endswith("s") and not lower.endswith("ss"):
-        return word[:-1]
-    return word
+    head, tail = _split_tail(word)
+    return head + _singular_word(tail)
 
 
 def convert_identifier(name: str, style: NameCase) -> str:
