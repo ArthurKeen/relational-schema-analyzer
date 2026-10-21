@@ -527,6 +527,46 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     (arango-solutions-org/r2g-arango#20); this brings the library method in line.
   - Nothing in RSA calls `to_foreign_key`, so no output or fingerprint change.
 
+- **v0.9.7** — **a partition is not a relationship, and inference is now measured.**
+  - *The fix.* PostgreSQL gives each partition its own name, its own columns and its own
+    copy of the parent's key, which to name-based inference is indistinguishable from a
+    child table carrying its parent's key — the strongest signal it has. So a partitioned
+    table produced a proposed composite key from the parent to every partition, from every
+    partition back, and between each pair of siblings. The connector already knew:
+    `annotate_partition_metadata` tags parent and children and rolls the children's
+    declared keys up to the parent, precisely because PostgreSQL records them on the child.
+    `fk_inference` consulted neither field. **Output change** for partitioned Postgres
+    sources: fewer, and correct, relationships in the bundle. No fingerprint change — the
+    fingerprint covers `PhysicalSchema`, which inference never mutates.
+  - *The rule is narrow, and had to be.* Excluding partition children outright looked
+    obviously right and cut Pagila's recall from 0.974 to 0.513: a partition's references
+    to *other* tables are genuine, which is why PostgreSQL stores them on the child. Only
+    references *within* a family are meaningless. Applied at both candidate paths — these
+    arose on the composite one, and fixing only the single-column path changed nothing.
+  - *The harness* (`tests/corpus_eval.py`, #27). A database that declares its keys is
+    already labelled, so stripping the declarations and re-inferring them gives a scored
+    comparison for free. Chinook, Northwind and Pagila supply 55 tables, 63 foreign keys
+    and 47 primary keys. The number RSA could not previously state, and the effect of this
+    release on it:
+
+        before   precision=0.492  recall=0.921  f1=0.641
+        after    precision=0.935  recall=0.921  f1=0.928
+
+    Precision, not recall, was the weakness — inference found 92% of real keys while
+    proposing nearly twice as many as existed, and **56 of the 60 wrong proposals came
+    from one partitioned table**. Three of the four that remain are inference being right:
+    Pagila's `payment_p2022_07` declares no foreign keys while its six siblings declare
+    three each. The fourth is a view, which cannot declare one. So 0.935 is a floor.
+  - *The instrument is tested.* It shipped reporting `precision=1.000` when nothing was
+    proposed and `recall=1.000` when nothing was declared — treating `x/0` as a perfect
+    score, so a change that broke inference entirely would have read as half-right, and a
+    constraint-free schema (RSA's target domain) as flawless. Both are now `None`, rendered
+    `n/a`. `tests/test_corpus_eval.py` covers the scorer against cases whose answer is
+    obvious, including that pooling adds counts rather than averaging rates and that
+    stripping does not mutate the schema the truth was read from.
+  - Still open on #27: the 17 scoring constants remain asserted rather than calibrated, and
+    primary-key discovery is not yet scored against the corpus.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
