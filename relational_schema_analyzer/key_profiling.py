@@ -188,8 +188,8 @@ def _score_single(
 ) -> tuple[float, list[str]]:
     name = col.name
     low = name.lower()
-    # Both the table's own name and its singular: singularize mangles -us/-is
-    # names (ORDER_STATUS -> ORDER_STATU), and keys are sometimes plural (ACCOUNTS_ID).
+    # Both the table's own name and its singular: keys are sometimes plural
+    # (ACCOUNTS_ID) and sometimes singular (ACCOUNT_ID) on a plural table.
     own = {f"{n}{sep}id" for n in _table_names(table.name) for sep in ("_", "")}
     score, reasons = 0.5, ["non-null and unique over every row"]
     # <other_table>_ID is the foreign-key naming convention FK inference itself

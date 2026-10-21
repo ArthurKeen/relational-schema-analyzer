@@ -47,7 +47,7 @@ _DDL = [
     "CREATE TABLE ACCOUNT (ACCOUNT_ID INT, NOTE VARCHAR)",
     "INSERT INTO ACCOUNT SELECT seq4() + 1, 'n' || MOD(seq4(), 3) " + _GEN.format(n=20),
     "CREATE TABLE ACCOUNTS (X INT)",
-    # singularize mangles ORDER_STATUS into ORDER_STATU.
+    # A singular table whose name ends in -s (ORDER_STATUS) keys on its own name.
     "CREATE TABLE ORDER_STATUS (LABEL_CODE VARCHAR, ORDER_STATUS_ID INT)",
     "INSERT INTO ORDER_STATUS SELECT 'L' || seq4(), seq4() + 1 " + _GEN.format(n=20),
     # A key plus another identifier: (ORDER_ID, CUSTOMER_ID) is unique only
@@ -257,7 +257,7 @@ def test_a_tables_own_key_is_never_treated_as_a_reference(env, accounts_is_view)
     assert not any("another table" in r for r in best.reasons)
 
 
-def test_own_name_matches_tables_singularize_mangles(env):
+def test_own_name_matches_a_singular_table_ending_in_s(env):
     schema, conn = env
     best = profile_primary_keys(schema, _probe(conn), tables=["ORDER_STATUS"]).best("ORDER_STATUS")
     assert best.columns == ("ORDER_STATUS_ID",)
