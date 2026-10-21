@@ -157,7 +157,7 @@ ForeignKey
   columns / foreign_table / foreign_columns / constraint_name
   is_unique                              # cardinality hint: FK unique → 1:1 vs many:1
 
-CheckConstraint   name? / expression / columns / enum_values?   # col IN (...) recognized
+CheckConstraint   name? / expression / columns / enum_values?   # col IN (...) recognized (check_enum.py)
 Index             name / columns / is_unique / is_primary
 SourceProvenance  dialect / server_version / database / namespace
 ```

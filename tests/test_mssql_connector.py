@@ -221,6 +221,10 @@ def _scol(name, dtype, nullable, default, ordinal):
 _MSSQL_UNIQUE_INDEXES: dict[str, list[dict]] = {}
 
 
+# CHECK rows per table (sys.check_constraints); patched per test.
+_MSSQL_CHECKS: dict[str, list[dict]] = {}
+
+
 def _mssql_resolve(sql: str, params: tuple):
     s = " ".join(sql.upper().split())
     table = params[1] if len(params) >= 2 else None
@@ -257,7 +261,7 @@ def _mssql_resolve(sql: str, params: tuple):
     if "SYS.INDEXES" in s:
         return list(_MSSQL_UNIQUE_INDEXES.get(table, []))
     if "SYS.CHECK_CONSTRAINTS" in s:
-        return []
+        return list(_MSSQL_CHECKS.get(table, []))
     if "MINOR_ID = 0" in s:
         return [{"comment": "people"}] if table == "users" else []
     if "MINOR_ID > 0" in s:
@@ -332,3 +336,32 @@ def test_unique_indexes_become_candidate_keys_once(monkeypatch):
 
     assert users.unique_constraints == [["email"], ["status", "created_at"]]
     assert {c.name for c in users.columns if c.is_unique} == {"id", "email"}
+
+
+def test_check_constraints_carry_their_enumerated_values(monkeypatch):
+    """Definitions are verbatim ``sys.check_constraints.definition`` from SQL Server 2022,
+    which rewrites ``IN ('active','closed')`` as a reversed ``OR`` chain."""
+    def row(name, definition, column="status", disabled=False, untrusted=False):
+        return {"name": name, "definition": definition, "column_name": column,
+                "is_disabled": disabled, "is_not_trusted": untrusted}
+
+    _install_fake_pymssql(monkeypatch, lambda **kw: _EnrichedConn())
+    monkeypatch.setitem(_MSSQL_CHECKS, "users", [
+        row("ck_status", "([status]='closed' OR [status]='active')"),
+        # Table-level constraint: SQL Server reports no parent column for it.
+        row("ck_table", "([status] IN ('a','b'))", column=None),
+        row("ck_disabled", "([status]='x' OR [status]='y')", disabled=True, untrusted=True),
+        row("ck_untrusted", "([status]='x' OR [status]='y')", untrusted=True),
+        row("ck_range", "([id]>=(1) AND [id]<=(5))", column="id"),
+    ])
+    users = SQLServerConnector("mssql://u:p@h/shop").get_schema().tables["users"]
+    checks = {c.name: c for c in users.check_constraints}
+
+    assert checks["ck_status"].enum_values == ["closed", "active"]
+    assert checks["ck_status"].expression == "([status]='closed' OR [status]='active')"
+    assert checks["ck_table"].enum_values == ["a", "b"]
+    assert checks["ck_table"].columns == ["status"]
+    # Not enforced, or never checked against existing rows: no value guarantee.
+    assert checks["ck_disabled"].enum_values is None
+    assert checks["ck_untrusted"].enum_values is None
+    assert checks["ck_range"].enum_values is None

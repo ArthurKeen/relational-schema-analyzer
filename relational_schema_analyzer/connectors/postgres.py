@@ -31,6 +31,7 @@ from psycopg.rows import dict_row, tuple_row
 
 from ..bitemporal import EVENT
 from ..bitemporal import to_iso as _iso
+from ..check_enum import enrich_check_constraint
 from ..log import get_logger
 from ..types import CheckConstraint, Column, ForeignKey, Schema, SourceProvenance, Table
 
@@ -419,7 +420,13 @@ class PostgresConnector:
         for fk_obj in fks:
             fk_obj.is_unique = set(fk_obj.columns) in unique_col_sets
 
-        checks = self._fetch_check_constraints(cur, table_name)
+        # Value lists are read from the expression; a ``NOT VALID`` constraint, whose
+        # existing rows were never checked, is left without them (see ``check_enum``).
+        column_names = [c.name for c in columns]
+        checks = [
+            enrich_check_constraint(check, column_names)
+            for check in self._fetch_check_constraints(cur, table_name)
+        ]
 
         return Table(
             name=table_name,

@@ -104,8 +104,9 @@ inference, RSA discovers type-discriminator columns and hands the assembled
 inputs to [`conceptual-taxonomy`](https://pypi.org/project/conceptual-taxonomy/) —
 the same library the ArangoDB analyzer uses, so both paradigms yield the same
 taxonomy. Discriminators come from declared `CHECK (col IN (…))` constraints
-(exact, no database access) or, opt-in behind an injected enumerator, from
-bounded sampling of name-affine columns. Relationally, class-table inheritance
+(exact, no database access; read from Postgres, MySQL — including `ENUM`
+columns — SQL Server and dbt `accepted_values`) or, opt-in behind an injected
+enumerator, from bounded sampling of name-affine columns. Relationally, class-table inheritance
 is *declared* rather than measured — a child table whose primary key is also a
 foreign key to its parent says so in the constraint — so containment needs no
 probe budget. The library's edges arrive as `subClassOfProposals` carrying
