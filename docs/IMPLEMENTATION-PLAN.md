@@ -627,7 +627,9 @@ projection — the whole core (Phases 0–5) landed together in the first releas
       against this list (ASA vendors it; r2g imports it). `tests/test_naming_known_answers.py`
       runs each entry lower, UPPER, Capitalized and as a compound.
 
-- **Unreleased** — **singularize consults a dictionary.** The 0.10.0 rules still failed
+- **v0.11.0** — **singularize consults a dictionary.** A minor version because it changes
+  output, and because r2g admits RSA only below 0.11.0: r2g, and through it
+  contextual-data-fabric, adopt this release deliberately. The 0.10.0 rules still failed
   wherever nobody had listed the word: `cactus` -> `cactu`, `knives` -> `knive`, `cacti`,
   `criteria`, `mice` and `alumni` unchanged, `analytics` -> `analytic`. A benchmark of eight
   techniques against a hand-labelled answer key (213 words) and a held-out set labelled
@@ -672,8 +674,9 @@ Planned next:
   `mcp.server.fastmcp` in favour of a new `MCPServer` API (FastMCP moved to its own package).
   `mcp_server.py` targets the 1.x FastMCP API. Porting it is a contained piece of work; until
   then the pin is what keeps the extra installable.
-- **v0.10.0 (target; was v0.9.0 until key discovery took that number, and v0.8.0 before
-  bitemporal stamping took that one)** — the
+- **v0.12.0 (target; was v0.10.0 and v0.11.0 until the singularizer releases took those
+  numbers, v0.9.0 until key discovery took that one, and v0.8.0 before bitemporal stamping
+  took that one)** — the
   **BigQuery** connector with its cost governor (see
   [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
   Northwind); the downstream `r2g` and `arango-ontoextract` integration PRs; shared contract
