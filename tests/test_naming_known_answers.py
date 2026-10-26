@@ -9,6 +9,7 @@ from relational_schema_analyzer.naming_known_answers import (
     INVARIANT_WORDS,
     PLURAL_SINGULAR_PAIRS,
     SINGULARIZE_ONLY,
+    SINGULARS,
 )
 
 
@@ -52,6 +53,12 @@ def test_singularize_leaves_a_singular_alone(plural, singular):
         assert singularize(spelling) == _respell(singular, case), spelling
 
 
+@pytest.mark.parametrize("word", SINGULARS)
+def test_listed_singulars_are_left_alone(word):
+    for spelling, _ in _spellings(word):
+        assert singularize(spelling) == spelling
+
+
 @pytest.mark.parametrize("word", INVARIANT_WORDS)
 def test_invariant_words_do_not_change(word):
     for spelling, _ in _spellings(word):
@@ -65,4 +72,5 @@ def test_the_list_has_no_contradictions():
     assert len(plurals) == len(set(plurals))
     assert len(singulars) == len(set(singulars))
     assert not set(INVARIANT_WORDS) & (set(plurals) | set(singulars))
-    assert all(w == w.lower() for w in plurals + singulars + list(INVARIANT_WORDS))
+    assert not set(SINGULARS) & (set(plurals) | set(singulars) | set(INVARIANT_WORDS))
+    assert all(w == w.lower() for w in plurals + singulars + list(INVARIANT_WORDS) + list(SINGULARS))

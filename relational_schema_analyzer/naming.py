@@ -8,7 +8,13 @@ the ArangoDB ``MappingConfig`` — stays in ``r2g``.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
 import re
+from dataclasses import dataclass
+from functools import lru_cache
+from importlib import resources
 from typing import Literal
 
 NameCase = Literal["preserve", "snake", "camel", "pascal"]
@@ -30,7 +36,7 @@ def split_identifier(name: str) -> list[str]:
 #: Same word in both forms; neither :func:`pluralize` nor :func:`singularize`
 #: changes it.
 _INVARIANT = frozenset(
-    {"data", "metadata", "media", "news", "series", "species", "gps", "sms", "dns"}
+    {"data", "metadata", "media", "news", "series", "species", "gps", "sms", "dns", "analytics"}
 )
 
 #: Singular words that already end in ``s``. Their plural adds ``es``, except
@@ -58,6 +64,10 @@ _IRREGULAR = {
     "criteria": "criterion",
     "phenomena": "phenomenon",
     "matrices": "matrix",
+    "oxen": "ox",
+    # Data-modelling usage, not the dictionary's: a table of customer demographics
+    # holds rows that are each one demographic (Northwind models CustomerDemographic).
+    "demographics": "demographic",
     "vertices": "vertex",
 }
 #: Plural -> singular for :func:`singularize` only (``index`` pluralizes to ``indexes``).
@@ -95,7 +105,7 @@ def _split_tail(word: str) -> tuple[str, str]:
     return "", word
 
 
-def _singular_word(word: str) -> str:
+def _singular_by_rules(word: str) -> str:
     low = word.lower()
     if low in _INVARIANT or low in _SINGULAR_ENDING_IN_S:
         return word
@@ -120,7 +130,7 @@ def _singular_word(word: str) -> str:
     return word
 
 
-def _plural_word(word: str) -> str:
+def _plural_by_rules(word: str) -> str:
     low = word.lower()
     upper = word[-1].isupper()
     if low in _INVARIANT:
@@ -135,6 +145,67 @@ def _plural_word(word: str) -> str:
     if low.endswith(("s", "x", "z", "ch", "sh")):
         return word + ("ES" if upper else "es")
     return word + ("S" if upper else "s")
+
+
+@dataclass(frozen=True)
+class NounLexicon:
+    """The dictionary layer: LemmInflect's noun lexicon, vendored as data.
+
+    ``plural_to_singular`` maps an inflected form to its lemma(s), primary
+    reading first; ``singular_to_plural`` maps a lemma to its plural(s),
+    preferred form first; ``nouns`` is every noun the lexicon knows. Built by
+    ``tools/build_noun_lexicon.py``; see that script for provenance (MIT).
+    """
+
+    plural_to_singular: dict[str, tuple[str, ...]]
+    singular_to_plural: dict[str, tuple[str, ...]]
+    nouns: frozenset[str]
+    sha256: str
+
+
+_LEXICON_FILE = "noun_lexicon.json.gz"
+
+
+@lru_cache(maxsize=1)
+def noun_lexicon() -> NounLexicon:
+    """Load the vendored noun lexicon once (about 200 KB, ~70 ms)."""
+    raw = resources.files("relational_schema_analyzer.data").joinpath(_LEXICON_FILE).read_bytes()
+    table = json.loads(gzip.decompress(raw))
+    p2s = {k: tuple(v) for k, v in table["plural_to_singular"].items()}
+    s2p = {k: tuple(v) for k, v in table["singular_to_plural"].items()}
+    nouns = frozenset(s2p) | frozenset(x for v in p2s.values() for x in v) | frozenset(table["lemmas_only"])
+    return NounLexicon(p2s, s2p, nouns, hashlib.sha256(raw).hexdigest())
+
+
+def _singular_word(word: str) -> str:
+    """Named lists, then the dictionary, then the rules (r2g-arango#30)."""
+    low = word.lower()
+    if (
+        low in _INVARIANT
+        or low in _SINGULAR_ENDING_IN_S
+        or low in _IRREGULAR
+        or low in _SINGULARIZE_ONLY
+        or (low.endswith("ies") and low[:-1] in _IE_SINGULARS)
+    ):
+        return _singular_by_rules(word)
+    lexicon = noun_lexicon()
+    readings = lexicon.plural_to_singular.get(low)
+    if readings:
+        return _same_case(readings[0], word)
+    if low in lexicon.nouns:  # a noun in its own right: cactus, logistics
+        return word
+    return _singular_by_rules(word)
+
+
+def _plural_word(word: str) -> str:
+    """Named lists, then the dictionary, then the rules; the inverse of :func:`_singular_word`."""
+    low = word.lower()
+    if low in _INVARIANT or low in _IRREGULAR_PLURAL or low in _SINGULAR_ENDING_IN_S:
+        return _plural_by_rules(word)
+    plurals = noun_lexicon().singular_to_plural.get(low)
+    if plurals:
+        return _same_case(plurals[0], word)
+    return _plural_by_rules(word)
 
 
 def pluralize(word: str) -> str:
