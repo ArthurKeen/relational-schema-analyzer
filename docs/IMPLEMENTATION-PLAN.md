@@ -627,6 +627,45 @@ projection — the whole core (Phases 0–5) landed together in the first releas
       against this list (ASA vendors it; r2g imports it). `tests/test_naming_known_answers.py`
       runs each entry lower, UPPER, Capitalized and as a compound.
 
+- **Unreleased** — **singularize consults a dictionary.** The 0.10.0 rules still failed
+  wherever nobody had listed the word: `cactus` -> `cactu`, `knives` -> `knive`, `cacti`,
+  `criteria`, `mice` and `alumni` unchanged, `analytics` -> `analytic`. A benchmark of eight
+  techniques against a hand-labelled answer key (213 words) and a held-out set labelled
+  before any technique ran (72 words) put a dictionary lookup far ahead:
+
+        r2g/RSA 0.10.0 rules          answer key 169/213   held-out 44/72
+        LemmInflect                   answer key 206/213   held-out 68/72
+        WordNet (NLTK)                answer key 201/213   held-out 67/72
+        Snowball (ArangoSearch stem)  answer key  93/213   held-out 36/72
+        this release                  answer key 212/213   held-out 68/72
+
+  Stemmers, including ArangoSearch's `stem` and `text` analyzers, return stems
+  (`warehous`, `categori`), so they cannot name a class; as a matching key they also merge
+  different words (`account` = `accounting`). `tools/singularize_benchmark/run.py`
+  re-runs the comparison.
+  - *The layers*, in order: the named lists (irregulars, invariant words, singulars ending
+    in `s`), then the dictionary, then the 0.10.0 rules for words it does not know
+    (`skus`, `kpis`). The dictionary is `relational_schema_analyzer/data/noun_lexicon.json.gz`
+    (198 KB), generated from LemmInflect 0.2.3's noun lexicon by
+    `tools/build_noun_lexicon.py` (byte-reproducible, MIT notice in
+    `data/NOTICE-noun-lexicon.md`). RSA gains **no runtime dependency**. A word the
+    dictionary lists as its own lemma stays as it is (`logistics`, `cactus`); `pluralize`
+    takes the dictionary's preferred plural (`knife` -> `knives`, `criterion` -> `criteria`).
+    `naming.noun_lexicon()` exposes the table and its SHA-256, so r2g can check that
+    arangodb-schema-analyzer vendors the same bytes.
+  - *One data-modelling decision overrides the dictionary:* `demographics` -> `demographic`.
+    The dictionary treats "demographics" as a noun in its own right, but a table of them
+    holds one demographic per row, and contextual-data-fabric's committed Northwind CSI
+    names the class `CustomerDemographic`. Across all 42 CSI files CDF has committed, that was
+    the only class name the dictionary would have changed.
+  - *Known answers* grow from 74 to 142 pairs, 4 singularize-only entries, 24 invariant
+    words and a new `SINGULARS` group (singulars to leave alone whose plural differs, such
+    as `cactus`); the tests run each in five spellings (469 cases). 63 fail on 0.10.0.
+  - **Output change**: over every table and column name in Chinook, Northwind, Pagila and
+    contextual-data-fabric's committed CSI (265 identifiers), no table name or FK prefix
+    changes except `freight` (now its own plural) and `ship_via` (`pluralize` gives
+    `ship_viae`); FK inference on those schemas is unchanged.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
