@@ -26,6 +26,8 @@ from relational_schema_analyzer.fk_inference import (
 )
 from relational_schema_analyzer.key_profiling import draft_key_overlay, profile_primary_keys
 
+psycopg = pytest.importorskip("psycopg")
+
 _DSN = os.environ.get("RSA_PG_DSN")
 
 pytestmark = [
@@ -292,11 +294,69 @@ def test_a_spent_budget_leaves_tables_undecided(keyless_schema):
         probe.close()
 
 
+def test_an_unreachable_server_is_tried_once(keyless_schema):
+    """A failed connection is attempted once per sampler, not once per probe.
+
+    Uses an unreachable port rather than a wrong password. The password version of
+    this test was red on every push to main from 2026-10-14 to 2026-10-26, because
+    CI runs Postgres with ``POSTGRES_HOST_AUTH_METHOD: trust``: the server accepts
+    any password, so the connection *succeeded*, ``connect_failed`` stayed False,
+    and the assertion failed. It passed locally, where the container enforces one.
+
+    The claim under test is the 0.9.5 governance guard — one connection attempt, not
+    one per table — and a refused port exercises it on any server, however it
+    authenticates. See ``test_a_wrong_password_is_tried_once`` below for the auth
+    path, which can only run where passwords are actually checked.
+    """
+    attempts = {"n": 0}
+    real_connect = psycopg.connect
+
+    def counting_connect(*a, **kw):
+        attempts["n"] += 1
+        return real_connect(*a, **kw)
+
+    # Port 1 is reserved and nothing listens there: refused immediately, no timeout.
+    bad = PostgresValueSampler(
+        "postgresql://nobody:nobody@127.0.0.1:1/nothing", schema_name=SCHEMA, max_queries=50
+    )
+    schema = PostgresConnector(_DSN, schema_name=SCHEMA).get_schema()
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(psycopg, "connect", counting_connect)
+    try:
+        profile = profile_primary_keys(schema, bad)
+        assert bad.stats["connect_failed"] is True
+        assert bad.stats["queries_run"] == 0
+        assert attempts["n"] == 1, (
+            f"the connection was attempted {attempts['n']} times for "
+            f"{len(schema.tables)} tables; the guard exists so a dead server costs "
+            "one attempt, not one per probe"
+        )
+        assert profile.not_evaluated and not profile.candidates, (
+            "a probe that could not run must leave tables undecided, never keyless"
+        )
+    finally:
+        monkey.undo()
+        bad.close()
+
+
 def test_a_wrong_password_is_tried_once(keyless_schema):
-    psycopg = pytest.importorskip("psycopg")
+    """The authentication path, where the server actually checks passwords.
+
+    Skipped on a trust-auth server — which is what CI runs — because there a wrong
+    password is simply accepted and there is no failure to observe. Detected by
+    trying, rather than by reading configuration we do not have.
+    """
     info = psycopg.conninfo.conninfo_to_dict(_DSN)
     info["password"] = "definitely-wrong"
-    bad = PostgresValueSampler(psycopg.conninfo.make_conninfo(**info), schema_name=SCHEMA, max_queries=50)
+    wrong_dsn = psycopg.conninfo.make_conninfo(**info)
+    try:
+        psycopg.connect(wrong_dsn, connect_timeout=5).close()
+    except Exception:
+        pass  # good: this server enforces passwords, so the test is meaningful
+    else:
+        pytest.skip("server accepts any password (trust auth); nothing to observe")
+
+    bad = PostgresValueSampler(wrong_dsn, schema_name=SCHEMA, max_queries=50)
     try:
         schema = PostgresConnector(_DSN, schema_name=SCHEMA).get_schema()
         profile_primary_keys(schema, bad)

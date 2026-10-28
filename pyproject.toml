@@ -62,7 +62,12 @@ mcp = ["mcp>=1,<2"]
 # present incidentally, which is why local runs sat on an old 1.x while CI resolved
 # 2.0 and failed. Same drift as the ruff bound above: an unpinned dependency plus a
 # stale local install reads as green right up until CI installs fresh.
-dev = ["pytest>=8", "ruff>=0.5", "fakesnow>=0.11", "snowflake-connector-python>=3", "duckdb>=1", "pyyaml>=6", "mypy>=1.10", "mcp>=1,<2"]
+# `structlog` is listed because `tests/test_cli_stdout_is_only_the_bundle.py` skips
+# without it — and skipping is exactly how the bug it covers survived. RSA never
+# *requires* structlog; `log.py` defers to it only when an application brings one.
+# But an unconfigured structlog writes to stdout, which corrupted the CLI's JSON,
+# and CI could not see that while it kept taking the stdlib fallback.
+dev = ["pytest>=8", "ruff>=0.5", "fakesnow>=0.11", "snowflake-connector-python>=3", "duckdb>=1", "pyyaml>=6", "mypy>=1.10", "mcp>=1,<2", "structlog>=23"]
 
 [project.scripts]
 relational-schema-analyzer = "relational_schema_analyzer.cli:main"
