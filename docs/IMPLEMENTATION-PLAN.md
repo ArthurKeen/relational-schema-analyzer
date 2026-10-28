@@ -668,6 +668,36 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     changes except `freight` (now its own plural) and `ship_via` (`pluralize` gives
     `ship_viae`); FK inference on those schemas is unchanged.
 
+- **v0.11.1** — **two bugs reported by r2g: the CLI's JSON, and a CI job red for twelve
+  days.** A patch release: the bundle itself is byte-identical, so no fingerprint changes.
+  - *`analyze --prior-run` emitted invalid JSON.* `log.py` defers to `structlog` when it is
+    installed, and an **unconfigured** structlog writes through `PrintLogger` to **stdout**,
+    at debug level — so one `bitemporal_fingerprint_unchanged` debug line landed in the
+    middle of the bundle and the caller's `json.load` failed. `--prior-run` was implicated
+    only because it is the one flag whose path logs at debug. The CLI now sends logs to
+    stderr; an application that has already configured structlog keeps its own setup
+    (`structlog.is_configured()` is checked first, and a test asserts a caller's destination
+    is not stolen).
+  - *Why it survived.* **RSA never installed structlog** — it was in no extra — so CI always
+    took the stdlib fallback, which writes to *stderr* at *WARNING*. Both the stream and the
+    level hid it, and only an application bringing its own structlog could see it, which is
+    exactly what r2g does. `structlog>=23` is now in the `dev` extra, because otherwise the
+    new tests skip — and skipping is how this survived in the first place.
+  - *The live-database job had failed on every push to `main` since 2026-10-14*, always on
+    `test_a_wrong_password_is_tried_once`. CI runs Postgres with
+    `POSTGRES_HOST_AUTH_METHOD: trust`, so the server accepts **any** password: the
+    connection succeeded, `connect_failed` stayed False, the assertion failed. It passed
+    locally, where the container enforces one. The claim under test is the 0.9.5 governance
+    guard — one connection attempt per sampler, not one per probe — which has nothing to do
+    with authentication, so it now uses an unreachable port (refused on any server however it
+    authenticates) and counts calls to `psycopg.connect` **directly** rather than inferring
+    from a flag. The password variant is kept where it can be covered: it detects a
+    trust-auth server by trying, and skips with a reason.
+  - *The test was green when it was written*, because it was only ever run against a
+    password-enforcing server. It asserted something about the environment rather than about
+    RSA — the same shape as a check nobody watches. `integration.yml` still does not run on
+    pull requests (#39), which is what let it sit red for twelve days.
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
