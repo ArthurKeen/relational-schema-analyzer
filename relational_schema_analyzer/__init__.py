@@ -40,6 +40,7 @@ from .connectors import (
 )
 from .fk_inference import (
     DuckDbValueSampler,
+    SqliteValueSampler,
     InferenceOptions,
     InferredForeignKey,
     create_value_sampler,
@@ -100,6 +101,7 @@ __all__ = [
     "InferenceOptions",
     "create_value_sampler",
     "DuckDbValueSampler",
+    "SqliteValueSampler",
     # Declared-key overlay (for sources whose catalog declares no keys)
     "apply_key_overlay",
     "load_key_overlay",

@@ -91,7 +91,7 @@ The shared contract for the conceptual consumers is still the JSON bundle
 flowchart TD
     src["source URL / catalog artifact"]
     subgraph rsa["relational_schema_analyzer"]
-        conn["connectors/<br/>pg · mysql · mssql · snowflake · duckdb · databricks · csv · dbt · osi"]
+        conn["connectors/<br/>pg · mysql · mssql · snowflake · duckdb · sqlite · databricks · csv · dbt · osi"]
         phys["PhysicalSchema"]
         fk["fk_inference<br/>(optional, when FKs absent)"]
         base["baseline.py (deterministic rules)<br/>+ optional llm/ refinement"]
@@ -403,6 +403,13 @@ Kafka, DDL-file parsing, and any new dialects (Oracle/SQLite).
   Catalog `information_schema` — same pattern; three-level `catalog.schema.table` namespace,
   assembly validated by mock-cursor tests, live is opt-in via `RSA_DATABRICKS_DSN`). Both
   landed behind the existing `SourceConnector` protocol, confirming the plugin design.
+- **Update (2026-10-29, AOE-driven).** A **SQLite** connector and value sampler landed the
+  same way, so AOE can import BIRD's SQLite databases for its with-and-without-ontology
+  benchmark. It needs no optional dependency (SQLite ships with Python), reads the catalog
+  through SQLite's table-valued pragma functions, opens files read-only, and resolves
+  foreign keys case-insensitively as SQLite does. SQLite has no comments and no
+  foreign-key names; keys are named `fk_<table>_<n>`. The sampler reuses the DuckDB
+  sampler's SQL through four dialect hooks.
 
 ### 9.3.1 Source-scope guardrail — **tabular sources in, event/message schemas out**
 

@@ -12,7 +12,7 @@ Request shape (relational variant of the shared tool contract):
       "requestId": "opt-id",
       "operation": "snapshot" | "analyze" | "owl" | "r2rml",
       "source": {                       # a live source to introspect ...
-        "type": "postgresql|mysql|sqlserver|snowflake|duckdb|databricks|csv",
+        "type": "postgresql|mysql|sqlserver|snowflake|duckdb|sqlite|databricks|csv",
         "url": "<connection string / DSN / path>",
         "schema": "public",             # optional namespace
         "params": { ... }               # optional source_params (e.g. csv delimiter)
