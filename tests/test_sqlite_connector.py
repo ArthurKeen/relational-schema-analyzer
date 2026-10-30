@@ -186,3 +186,51 @@ def test_untyped_columns_and_names_with_spaces(tmp_path):
     t = conf._find_table(create_connector("sqlite", path).get_schema(), "school list")
     assert [c.name for c in t.columns] == ["id", "Charter Number", "note"]
     assert conf._find_col(t, "note").data_type == ""
+
+
+def test_generated_columns_are_reported(tmp_path):
+    """``pragma_table_info`` hides generated columns; they are still columns."""
+    path = _make(
+        tmp_path,
+        [
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, a INT,"
+            " b INT GENERATED ALWAYS AS (a * 2) STORED, c INT AS (a + 1))",
+        ],
+    )
+    t = conf._find_table(create_connector("sqlite", path).get_schema(), "t")
+    assert [c.name for c in t.columns] == ["id", "a", "b", "c"]
+
+
+def test_only_sqlites_own_tables_are_hidden(tmp_path):
+    """``_`` is a LIKE wildcard, so ``sqlite_%`` unescaped also matched ``sqlitedata``."""
+    path = _make(
+        tmp_path,
+        [
+            "CREATE TABLE sqlitedata (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE sqlite1 (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE plain (id INTEGER PRIMARY KEY AUTOINCREMENT)",  # makes sqlite_sequence
+        ],
+    )
+    schema = create_connector("sqlite", path).get_schema()
+    assert sorted(schema.tables) == ["plain", "sqlite1", "sqlitedata"]
+
+
+def test_an_unreadable_virtual_table_is_skipped_not_fatal(tmp_path):
+    """One table whose module is not loaded (SpatiaLite, say) must not fail the file."""
+    path = _make(tmp_path, ["CREATE TABLE a (id INTEGER PRIMARY KEY)"])
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA writable_schema = ON")
+    conn.execute(
+        "INSERT INTO sqlite_master (type, name, tbl_name, rootpage, sql) VALUES"
+        " ('table', 'geo', 'geo', 0, 'CREATE VIRTUAL TABLE geo USING no_such_module(x)')"
+    )
+    conn.commit()
+    conn.close()
+    assert sorted(create_connector("sqlite", path).get_schema().tables) == ["a"]
+
+
+def test_a_file_that_is_not_a_database_fails_as_the_connector_does(tmp_path):
+    path = tmp_path / "data.csv"
+    path.write_text("id,name\n1,a\n")
+    with pytest.raises(RuntimeError, match="Failed to read SQLite database"):
+        create_connector("sqlite", str(path)).get_schema()

@@ -16,7 +16,7 @@
       "required": ["type", "url"],
       "description": "Relational source to introspect — the relational variant of `connection`. RSA reads SQL catalogs and file/catalog artifacts rather than an ArangoDB endpoint, so the descriptor is a source type plus a DSN or path.",
       "properties": {
-        "type": { "type": "string", "description": "postgresql | mysql | sqlserver | snowflake | duckdb | databricks | dbt | osi | csv" },
+        "type": { "type": "string", "description": "postgresql | mysql | sqlserver | snowflake | duckdb | sqlite | databricks | dbt | osi | csv" },
         "url": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Connection string / DSN, or a filesystem path for file-backed sources." },
         "schema": { "type": "string", "description": "Source schema / namespace (default `public`)." },
         "params": { "type": "object", "description": "Source-specific options, e.g. CSV `delimiter` / `has_header`." }

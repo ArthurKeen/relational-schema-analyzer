@@ -1,7 +1,7 @@
 """SQLite source connector (introspection only).
 
 SQLite ships with Python, so this connector needs no optional dependency. It reads
-the catalog through SQLite's table-valued pragma functions (``pragma_table_info``,
+the catalog through SQLite's table-valued pragma functions (``pragma_table_xinfo``,
 ``pragma_index_list``, ``pragma_index_info``, ``pragma_foreign_key_list``), which
 take the table name as a bound parameter, so no identifier is ever spliced into SQL.
 
@@ -78,6 +78,9 @@ class SqliteConnector:
             raise RuntimeError(f"Failed to open SQLite database: {err}") from err
         try:
             return self._introspect(conn)
+        except sqlite3.DatabaseError as err:
+            # SQLite opens lazily: a file that is not a database fails on first read.
+            raise RuntimeError(f"Failed to read SQLite database: {err}") from err
         finally:
             conn.close()
 
@@ -89,11 +92,21 @@ class SqliteConnector:
         rows = self._query(
             conn,
             "SELECT name, type FROM sqlite_master "
-            "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            # `_` is a LIKE wildcard: unescaped, this also hid a user table `sqlitedata`.
+            "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
+            "ORDER BY name",
         )
+        columns: dict[str, list[dict[str, Any]]] = {}
+        for name, _ in rows:
+            try:
+                columns[name] = self._columns(conn, name)
+            except sqlite3.Error as err:
+                # A virtual table whose module is not loaded (SpatiaLite, say) cannot be
+                # read; skip that one table rather than fail the whole file.
+                logger.warning("sqlite_table_unreadable", table=name, error=str(err))
+        rows = [(name, kind) for name, kind in rows if name in columns]
         names = [name for name, _ in rows]
         by_lower = {name.lower(): name for name in names}
-        columns = {name: self._columns(conn, name) for name in names}
         pks = {name: self._primary_key(columns[name]) for name in names}
         for name, kind in rows:
             schema.tables[name] = self._build_table(
@@ -121,8 +134,10 @@ class SqliteConnector:
     def _columns(self, conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
         rows = self._query(
             conn,
-            'SELECT cid, name, type, "notnull", dflt_value, pk FROM pragma_table_info(?) '
-            "ORDER BY cid",
+            # table_xinfo, because table_info hides generated columns. hidden=1 is a
+            # virtual table's hidden column; 2 and 3 are generated (virtual, stored).
+            'SELECT cid, name, type, "notnull", dflt_value, pk FROM pragma_table_xinfo(?) '
+            "WHERE hidden IN (0, 2, 3) ORDER BY cid",
             (table,),
         )
         return [
