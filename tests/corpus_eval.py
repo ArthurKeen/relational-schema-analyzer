@@ -219,5 +219,7 @@ def total(scores: Iterable[Score], *, corpus: str = "ALL") -> Score:
         correct=sum(s.correct for s in scores),
         missed=set().union(*(s.missed for s in scores)) if scores else set(),
         spurious=set().union(*(s.spurious for s in scores)) if scores else set(),
-        declined={k: v for s in scores for k, v in s.declined.items()},
+        # Keyed by corpus too: Chinook and Pagila both have a `customer`, and a shared
+        # key would count two declines as one and put the other back in the denominator.
+        declined={f"{s.corpus}.{k}": v for s in scores for k, v in s.declined.items()},
     )

@@ -265,6 +265,17 @@ class TestDecliningIsNotFailing:
         assert s.recall is None, "nothing was attempted, so there is no recall to report"
         assert "declined=  2" in s.line()
 
+    def test_pooling_keeps_a_decline_per_corpus(self):
+        """Two corpora declining a same-named table are two declines, not one."""
+        a = Score(corpus="chinook", expected=11, proposed=10, correct=10,
+                  declined={"customer": "empty table"})
+        b = Score(corpus="pagila", expected=22, proposed=21, correct=21,
+                  declined={"customer": "empty table"})
+        pooled = total([a, b])
+        assert len(pooled.declined) == 2
+        assert pooled.evaluated == 31
+        assert pooled.recall == 1.0, "a merged key would put one decline back as a miss"
+
     def test_a_wrong_answer_is_still_wrong(self):
         """The guard must not become an excuse — only declining is exempt."""
         schema = _schema_with_one_declared_fk()
