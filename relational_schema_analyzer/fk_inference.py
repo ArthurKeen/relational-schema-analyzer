@@ -1903,8 +1903,25 @@ class DuckDbValueSampler:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    #: Prefix of this sampler's log events.
+    _log_name = "duckdb_sampler"
+
     def _qi(self, name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
+
+    # ── Dialect hooks: everything below them is shared with SqliteValueSampler ──
+
+    def _as_text(self, expr: str) -> str:
+        return f"CAST({expr} AS VARCHAR)"
+
+    def _ratio(self, numerator: str, denominator: str) -> str:
+        return f"{numerator}::DOUBLE / GREATEST({denominator}, 1)::DOUBLE"
+
+    def _real(self, expr: str) -> str:
+        return f"({expr})::DOUBLE"
+
+    def _contains(self, value: str, needle: str) -> str:
+        return f"strpos({value}, {needle}) > 0"
 
     def _qt(self, table: str) -> str:
         return f"{self._qi(self.schema_name)}.{self._qi(table)}"
@@ -1914,13 +1931,13 @@ class DuckDbValueSampler:
         try:
             conn = self._conn_lazy()
         except Exception as err:  # noqa: BLE001
-            logger.warning("duckdb_sampler_connect_failed", error=str(err))
+            logger.warning(f"{self._log_name}_connect_failed", error=str(err))
             return None
         try:
             row = conn.execute(query, params).fetchone() if params else conn.execute(query).fetchone()
             return tuple(row) if row else None
         except Exception as err:  # noqa: BLE001
-            logger.warning("duckdb_sampler_query_failed", error=str(err))
+            logger.warning(f"{self._log_name}_query_failed", error=str(err))
             return None
 
     def _scalar(self, query: str, params: tuple) -> SamplerResult:
@@ -1946,8 +1963,9 @@ class DuckDbValueSampler:
         lc, fc = self._qi(local_column), self._qi(foreign_column)
 
         def run(norm: bool) -> Optional[float]:
-            lk = f"lower(trim(CAST({lc} AS VARCHAR)))" if norm else lc
-            fk_ = f"lower(trim(CAST({fc} AS VARCHAR)))" if norm else fc
+            lk = f"lower(trim({self._as_text(lc)}))" if norm else lc
+            fk_ = f"lower(trim({self._as_text(fc)}))" if norm else fc
+            share = self._ratio("COUNT(*) FILTER (WHERE f.v IS NOT NULL)", "COUNT(*)")
             q = f"""
                 WITH l AS (
                     SELECT DISTINCT {lk} AS v
@@ -1960,8 +1978,7 @@ class DuckDbValueSampler:
                     FROM {self._qt(foreign_table)}
                     WHERE {fc} IS NOT NULL
                 )
-                SELECT COUNT(*) FILTER (WHERE f.v IS NOT NULL)::DOUBLE
-                           / GREATEST(COUNT(*), 1)::DOUBLE
+                SELECT {share}
                 FROM l LEFT JOIN f ON l.v = f.v
             """  # noqa: S608 - identifiers are quoted; limits are bound ints we own
             row = self._row(q, (self.limit,))
@@ -1989,7 +2006,7 @@ class DuckDbValueSampler:
                 WHERE {self._qi(column)} IS NOT NULL
                 LIMIT ?
             )
-            SELECT COUNT(DISTINCT v)::DOUBLE / GREATEST(COUNT(*), 1)::DOUBLE FROM s
+            SELECT {self._ratio("COUNT(DISTINCT v)", "COUNT(*)")} FROM s
         """  # noqa: S608 - identifiers are quoted; limit is a bound int we own
         return self._scalar(q, (self.limit,))
 
@@ -1998,6 +2015,7 @@ class DuckDbValueSampler:
     ) -> SamplerResult:
         det = ", ".join(self._qi(c) for c in determinant_columns)
         not_null = " AND ".join(f"{self._qi(c)} IS NOT NULL" for c in determinant_columns)
+        single = self._real("COALESCE(AVG(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END), 0)")
         q = f"""
             WITH s AS (
                 SELECT {det}, {self._qi(dependent_column)} AS dep
@@ -2008,12 +2026,14 @@ class DuckDbValueSampler:
                 SELECT {det}, COUNT(DISTINCT dep) AS dcount
                 FROM s WHERE {not_null} GROUP BY {det}
             )
-            SELECT COALESCE(AVG(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END), 0)::DOUBLE
+            SELECT {single}
             FROM g
         """  # noqa: S608 - identifiers are quoted; limit is a bound int we own
         return self._scalar(q, (self.limit,))
 
     def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        has = self._contains("v", "?")
+        rate = self._real(f"COALESCE(AVG(CASE WHEN {has} THEN 1.0 ELSE 0.0 END), 0)")
         q = f"""
             WITH s AS (
                 SELECT {self._qi(column)} AS v
@@ -2021,10 +2041,50 @@ class DuckDbValueSampler:
                 WHERE {self._qi(column)} IS NOT NULL
                 LIMIT ?
             )
-            SELECT COALESCE(AVG(CASE WHEN strpos(v, ?) > 0 THEN 1.0 ELSE 0.0 END), 0)::DOUBLE
+            SELECT {rate}
             FROM s
         """  # noqa: S608 - identifiers are quoted; limit is a bound int we own
         return self._scalar(q, (self.limit, delimiter))
+
+
+class SqliteValueSampler(DuckDbValueSampler):
+    """The DuckDB sampler's measurements, in SQLite's dialect, over a read-only file.
+
+    SQLite takes the same bound ``?`` parameters, double-quoted identifiers and
+    ``"main"."table"`` names, and supports ``COUNT(*) FILTER (WHERE ...)``; only the
+    casts, ``GREATEST`` and ``strpos`` differ, so those are all this class changes.
+    A SQLite file has one schema, so ``schema_name`` is always ``main``.
+    """
+
+    _log_name = "sqlite_sampler"
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        schema_name: str = "main",
+        limit: int = 10_000,
+    ) -> None:
+        super().__init__(connection_string, schema_name="main", limit=limit)
+
+    def _conn_lazy(self):
+        if self._conn is None:
+            from .connectors.sqlite_source import connect_read_only
+
+            self._conn = connect_read_only(self.connection_string)
+        return self._conn
+
+    def _as_text(self, expr: str) -> str:
+        return f"CAST({expr} AS TEXT)"
+
+    def _ratio(self, numerator: str, denominator: str) -> str:
+        return f"CAST({numerator} AS REAL) / max({denominator}, 1)"
+
+    def _real(self, expr: str) -> str:
+        return f"CAST({expr} AS REAL)"
+
+    def _contains(self, value: str, needle: str) -> str:
+        return f"instr({value}, {needle}) > 0"
 
 
 # ── Concrete CSV value sampler ──────────────────────────────────────
@@ -2657,6 +2717,8 @@ def create_value_sampler(
         return SQLServerValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "duckdb":
         return DuckDbValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if normalize_source_type(source_type) == "sqlite":
+        return SqliteValueSampler(connection_string, limit=limit)
     if normalize_source_type(source_type) == "databricks":
         return DatabricksValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "snowflake":

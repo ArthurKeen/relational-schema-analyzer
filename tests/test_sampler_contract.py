@@ -39,6 +39,7 @@ SAMPLER_REGISTRY: dict[str, str] = {
     "DatabricksValueSampler": "RSA_DATABRICKS_DSN",
     "SnowflakeValueSampler": "RSA_SNOWFLAKE_DSN",
     "DuckDbValueSampler": "",   # embedded — always available
+    "SqliteValueSampler": "",   # embedded — ships with Python
     "CsvValueSampler": "",      # embedded — always available
 }
 
@@ -72,6 +73,36 @@ def _duckdb_fixture(tmp_path) -> Callable[[], Any]:
     return lambda: fk.DuckDbValueSampler(path, limit=BOUND)
 
 
+def _sqlite_fixture(tmp_path) -> Callable[[], Any]:
+    """The DuckDB fixture's rows, written to a SQLite file."""
+    import sqlite3
+
+    path = str(tmp_path / "contract.sqlite")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY)")
+    conn.executemany("INSERT INTO customers VALUES (?)", [(i,) for i in range(1, PARENT_ROWS + 1)])
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+    conn.executemany(
+        "INSERT INTO orders VALUES (?, ?)",
+        [(i, PARENT_ROWS - (i % CHILD_VALUES)) for i in range(1, 201)],
+    )
+    conn.execute("CREATE TABLE accounts (code TEXT PRIMARY KEY)")
+    conn.executemany(
+        "INSERT INTO accounts VALUES (?)", [(f"CUST{i}",) for i in range(1, PARENT_ROWS + 1)]
+    )
+    conn.execute("CREATE TABLE invoices (id INTEGER, code_lower TEXT, code_padded TEXT)")
+    conn.executemany(
+        "INSERT INTO invoices VALUES (?, ?, ?)",
+        [
+            (i, f"cust{i % CHILD_VALUES + 1}", f"CUST{i % CHILD_VALUES + 1}".ljust(14))
+            for i in range(1, 201)
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return lambda: fk.SqliteValueSampler(path, limit=BOUND)
+
+
 def _csv_fixture(tmp_path) -> Callable[[], Any]:
     pytest.importorskip("polars")
     d = tmp_path / "csvdemo"
@@ -100,7 +131,11 @@ def _csv_fixture(tmp_path) -> Callable[[], Any]:
     return lambda: fk.CsvValueSampler(str(d), limit=BOUND)
 
 
-EMBEDDED = {"DuckDbValueSampler": _duckdb_fixture, "CsvValueSampler": _csv_fixture}
+EMBEDDED = {
+    "DuckDbValueSampler": _duckdb_fixture,
+    "SqliteValueSampler": _sqlite_fixture,
+    "CsvValueSampler": _csv_fixture,
+}
 
 
 class TestReferencedSideIsNotBounded:

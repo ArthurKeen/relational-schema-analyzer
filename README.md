@@ -14,7 +14,7 @@ ArangoDB sources interchangeably.
 
 ```mermaid
 flowchart TD
-    live["Live / file sources<br/>PostgreSQL · MySQL · SQL Server · Snowflake · DuckDB · Databricks · CSV"]
+    live["Live / file sources<br/>PostgreSQL · MySQL · SQL Server · Snowflake · DuckDB · SQLite · Databricks · CSV"]
     catalog["Data-catalog sources<br/>dbt manifest.json · OSI *.osi.yaml"]
     phys["Physical Schema<br/>tables · columns · PKs · FKs · types"]
     bundle["Canonical JSON bundle<br/>conceptualSchema · physicalMapping · metadata"]
@@ -69,7 +69,7 @@ documentation-grade metadata even when unenforced). Where nothing is declared,
 sampling** — the fraction of a child column's distinct values present in the
 candidate parent, computed on samples, never bulk reads. Inferred keys carry a
 confidence score so downstream review can accept or reject them. Sampler
-coverage is per-connector (PostgreSQL, MySQL, SQL Server, DuckDB, CSV today; the
+coverage is per-connector (PostgreSQL, MySQL, SQL Server, DuckDB, SQLite, CSV today; the
 Snowflake value sampler is tracked work — until then Snowflake inference is
 declared-keys + name heuristics).
 
@@ -156,7 +156,7 @@ subjects and are flagged). Foreign keys become referencing object maps with a fu
 properties to a relationship, so a join table's non-key attribute columns are reported in
 a comment rather than silently dropped — reify the association if you need them.
 
-Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `databricks`, `csv`,
+Sources: `postgresql`, `mysql`, `sqlserver`, `snowflake`, `duckdb`, `sqlite`, `databricks`, `csv`,
 plus two **data-catalog** sources (see `docs/DESIGN.md` §9.3.1): `dbt` (a dbt
 `manifest.json` — tests/contracts → constraints + FKs) and `osi` (an Open Semantic
 Interchange `*.osi.yaml` model — datasets/fields/primary_key/unique_keys → tables +

@@ -128,6 +128,7 @@ SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
     "sqlserver",
     "snowflake",
     "duckdb",
+    "sqlite",
     "databricks",
     "dbt",
     "osi",
@@ -142,6 +143,7 @@ _MYSQL_ALIASES: frozenset[str] = frozenset({"mysql", "mariadb"})
 
 # Aliases that all mean Microsoft SQL Server.
 _MSSQL_ALIASES: frozenset[str] = frozenset({"sqlserver", "mssql", "sql_server"})
+_SQLITE_ALIASES: frozenset[str] = frozenset({"sqlite", "sqlite3"})
 
 
 def merge_unique_sets(
@@ -171,7 +173,8 @@ def normalize_source_type(source_type: str | None) -> str:
 
     Empty/``None`` defaults to ``"postgresql"`` (R2G's historical default), the
     ``postgres`` / ``pg`` aliases fold to ``"postgresql"``, ``mariadb`` folds to
-    ``"mysql"``, and ``mssql`` / ``sql_server`` fold to ``"sqlserver"``.
+    ``"mysql"``, ``mssql`` / ``sql_server`` fold to ``"sqlserver"``, and ``sqlite3``
+    folds to ``"sqlite"``.
     """
     key = (source_type or "postgresql").strip().lower()
     if key in _PG_ALIASES:
@@ -180,6 +183,8 @@ def normalize_source_type(source_type: str | None) -> str:
         return "mysql"
     if key in _MSSQL_ALIASES:
         return "sqlserver"
+    if key in _SQLITE_ALIASES:
+        return "sqlite"
     return key
 
 
@@ -266,6 +271,10 @@ def create_connector(
         from .duckdb_source import DuckDbConnector
 
         return DuckDbConnector(connection_string, schema_name=schema_name)
+    if key == "sqlite":
+        from .sqlite_source import SqliteConnector
+
+        return SqliteConnector(connection_string, schema_name=schema_name)
     if key == "databricks":
         from .databricks_source import DatabricksConnector
 
