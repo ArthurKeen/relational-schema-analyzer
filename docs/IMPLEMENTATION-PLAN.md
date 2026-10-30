@@ -698,14 +698,42 @@ projection — the whole core (Phases 0–5) landed together in the first releas
     RSA — the same shape as a check nobody watches. `integration.yml` still does not run on
     pull requests (#39), which is what let it sit red for twelve days.
 
+- **v0.12.0** — **a SQLite source, and a corpus score that no longer punishes honesty.**
+  Additive: no change to how existing sources are read or analysed.
+  - *SQLite connector* (`sqlite`, alias `sqlite3`; PR #43), asked for by arango-ontoextract,
+    which needs BIRD's SQLite databases for its with-and-without-ontology benchmark. It needs
+    no extra: SQLite ships with Python. It reads the catalog through SQLite's table-valued
+    pragma functions with the table name bound, opens the file read-only (a missing file is
+    an error, never a new database), resolves foreign keys case-insensitively as SQLite does,
+    and treats a reference with no column list as pointing at the primary key. A reference to
+    a table or column that does not exist is skipped and logged, since SQLite accepts and
+    never enforces one. Keys are named `fk_<table>_<n>`; SQLite keeps no names and no
+    comments. Review on the PR added: generated columns are reported (`pragma_table_xinfo`),
+    user tables named `sqlite…` are no longer hidden, one unreadable virtual table is skipped
+    rather than failing the file, and a file that is not a database fails with a plain
+    message. On BIRD's 11 databases: 75 tables, all 105 declared foreign keys.
+  - *SQLite value sampler.* The DuckDB sampler's measurements through four dialect hooks
+    (text cast, ratio, real cast, substring test), so the SQL is written once; DuckDB's
+    queries are unchanged. It is in the sampler contract (#10) as an embedded engine.
+  - *`corpus_eval`: a declined answer is not a wrong answer* (#27, PR #35). A table the
+    profiler declined to judge (an empty table) was counted as a miss; it now leaves recall's
+    denominator, and a corpus where everything was declined reports recall `None`. With
+    Pagila's data loaded, primary-key discovery scores across the whole corpus for the first
+    time: precision and recall 0.800 (36 of 45 proposed, 47 expected, 2 declined). Pooled
+    declines are now kept per corpus, so two corpora declining a same-named table (`customer`
+    in Chinook and Pagila) count twice.
+  - *Known and filed:* FTS5 shadow tables appear as tables and read-only WAL files cannot be
+    opened (#44); embedded engines hash the library version into the schema fingerprint
+    (#45).
+
 Planned next:
 
 - **mcp 2.0 port** — the `[mcp]` extra is pinned `<2` because mcp 2.0 removed the bundled
   `mcp.server.fastmcp` in favour of a new `MCPServer` API (FastMCP moved to its own package).
   `mcp_server.py` targets the 1.x FastMCP API. Porting it is a contained piece of work; until
   then the pin is what keeps the extra installable.
-- **v0.12.0 (target; was v0.10.0 and v0.11.0 until the singularizer releases took those
-  numbers, v0.9.0 until key discovery took that one, and v0.8.0 before bitemporal stamping
+- **v0.13.0 (target; was v0.12.0 until the SQLite release took that one, v0.10.0 and v0.11.0
+  until the singularizer releases took those numbers, v0.9.0 until key discovery took that one, and v0.8.0 before bitemporal stamping
   took that one)** — the
   **BigQuery** connector with its cost governor (see
   [`PLAN-bigquery.md`](PLAN-bigquery.md)); live Docker introspection corpus (Pagila / Chinook /
